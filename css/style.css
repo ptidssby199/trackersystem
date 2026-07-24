@@ -117,13 +117,6 @@ button {
   margin-bottom: 6px;
 }
 
-.hint-inline {
-  text-transform: none;
-  letter-spacing: normal;
-  color: var(--way-600);
-  font-weight: 500;
-}
-
 .field input,
 .field select {
   width: 100%;
@@ -133,11 +126,6 @@ button {
   font-family: var(--sans);
   font-size: 0.95rem;
   border-radius: var(--radius);
-}
-
-.field input[readonly] {
-  background: var(--paper-100);
-  color: var(--ink-600);
 }
 
 .field input:focus,
