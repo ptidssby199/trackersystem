@@ -16,7 +16,10 @@ const State = {
   editingEmployee: null,
   map: null,
   marker: null,
+  notifications: [], // { msg, kind, time }
 };
+
+let deferredInstallPrompt = null;
 
 function toast(msg, kind = '') {
   const host = document.getElementById('toastHost');
@@ -25,6 +28,50 @@ function toast(msg, kind = '') {
   el.textContent = msg;
   host.appendChild(el);
   setTimeout(() => el.remove(), 3800);
+  addNotification(msg, kind || 'info');
+}
+
+// ---------------------------------------------------------------
+// Notification center (custom in-app notifications, with a native
+// OS notification fallback when the app is running in the
+// background as an installed PWA).
+// ---------------------------------------------------------------
+function addNotification(msg, kind) {
+  State.notifications.unshift({ msg, kind, time: new Date() });
+  State.notifications = State.notifications.slice(0, 30);
+  renderNotifList();
+
+  const dot = document.getElementById('notifDot');
+  if (dot) dot.classList.remove('hidden');
+
+  if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+    try {
+      new Notification('IDS Tracker System', {
+        body: msg,
+        icon: 'icons/icon-192.png',
+        badge: 'icons/icon-192.png',
+      });
+    } catch (_) { /* ignore unsupported environments */ }
+  }
+}
+
+function renderNotifList() {
+  const list = document.getElementById('notifList');
+  if (!list) return;
+  if (State.notifications.length === 0) {
+    list.innerHTML = '<div class="empty-state">Belum ada notifikasi.</div>';
+    return;
+  }
+  const iconFor = (kind) => (kind === 'success' ? '✓' : kind === 'error' ? '!' : '•');
+  list.innerHTML = State.notifications.map((n) => `
+    <div class="notif-row ${n.kind}">
+      <div class="ni-icon">${iconFor(n.kind)}</div>
+      <div class="ni-body">
+        <div class="ni-msg">${esc(n.msg)}</div>
+        <div class="ni-time">${n.time.toLocaleTimeString('id-ID')}</div>
+      </div>
+    </div>
+  `).join('');
 }
 
 function todayISO() {
@@ -79,12 +126,36 @@ window.addEventListener('DOMContentLoaded', async () => {
   await DB.seedIfEmpty();
   bindLogin();
   bindShell();
+  registerServiceWorker();
 
   const savedUser = sessionStorage.getItem('idsTrackerUser');
   if (savedUser) {
     State.user = JSON.parse(savedUser);
     showApp();
   }
+});
+
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('service-worker.js').catch(() => {
+      // Offline install support just won't be available; the app still works online.
+    });
+  });
+}
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  const btn = document.getElementById('installBtn');
+  if (btn) btn.classList.remove('hidden');
+});
+
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  const btn = document.getElementById('installBtn');
+  if (btn) btn.classList.add('hidden');
+  toast('Aplikasi terpasang di perangkat ini.', 'success');
 });
 
 // ---------------------------------------------------------------
@@ -118,13 +189,58 @@ function bindShell() {
     document.getElementById('loginForm').reset();
   });
 
-  document.querySelectorAll('.nav-item').forEach((item) => {
+  document.querySelectorAll('.bn-item').forEach((item) => {
     item.addEventListener('click', () => {
-      document.querySelectorAll('.nav-item').forEach((n) => n.classList.remove('active'));
+      document.querySelectorAll('.bn-item').forEach((n) => n.classList.remove('active'));
       item.classList.add('active');
       State.page = item.dataset.page;
       renderPage();
     });
+  });
+
+  // Notification bell panel
+  const bellBtn = document.getElementById('notifBellBtn');
+  const panel = document.getElementById('notifPanel');
+  bellBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    panel.classList.toggle('hidden');
+    if (!panel.classList.contains('hidden')) {
+      document.getElementById('notifDot').classList.add('hidden');
+    }
+  });
+  document.addEventListener('click', (e) => {
+    if (!panel.classList.contains('hidden') && !panel.contains(e.target) && e.target !== bellBtn) {
+      panel.classList.add('hidden');
+    }
+  });
+  document.getElementById('notifClearBtn').addEventListener('click', () => {
+    State.notifications = [];
+    renderNotifList();
+  });
+
+  const enableBtn = document.getElementById('notifEnableBtn');
+  if ('Notification' in window && Notification.permission === 'default') {
+    enableBtn.classList.remove('hidden');
+  }
+  enableBtn.addEventListener('click', async () => {
+    if (!('Notification' in window)) return;
+    const perm = await Notification.requestPermission();
+    if (perm === 'granted') {
+      enableBtn.classList.add('hidden');
+      toast('Notifikasi perangkat diaktifkan.', 'success');
+    } else {
+      toast('Izin notifikasi tidak diberikan.', 'error');
+    }
+  });
+
+  // Install button (PWA)
+  document.getElementById('installBtn').addEventListener('click', async () => {
+    if (!deferredInstallPrompt) return;
+    deferredInstallPrompt.prompt();
+    const choice = await deferredInstallPrompt.userChoice;
+    deferredInstallPrompt = null;
+    document.getElementById('installBtn').classList.add('hidden');
+    if (choice.outcome === 'accepted') toast('Memasang aplikasi…', 'success');
   });
 }
 
