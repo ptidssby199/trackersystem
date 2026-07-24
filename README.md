@@ -11,43 +11,23 @@ server — cocok di-hosting statis lewat GitHub Pages.
 2. **Master Petani** — kode petani, nama petani, source, petani conversion, kode FT.
 3. **Type** — daftar type lokasi (default: Field, Warehouse), bisa ditambah/diubah.
 4. **Master Employee** — kode NIK, nama, posisi, password login.
-5. **Catat Lokasi** — form record: tanggal & waktu kunjungan, kode+nama
-   petani, type, dan titik GPS yang diambil langsung dari perangkat
-   (`navigator.geolocation`), ditampilkan di minimap Leaflet dan bisa
-   digeser manual bila perlu. Setiap titik otomatis mendapat **transID**
-   (integer 32-bit, bisa negatif — mengikuti kolom `int` di SQL Server),
-   **rowguid** (GUID unik), **altitude** dari GPS, **Crop Year** (ikut
-   menu Pengaturan), plus **Remark** opsional (default `-` jika kosong).
-   Field lain — Source, `dtRecord`/`dtModified` (format
-   `YYYY-MM-DD HH:MM:SS.mmm`), `UserModified`/`Username` (default
-   `sync`), dan `userlogin` — diisi otomatis di balik layar, meniru
-   struktur tabel `T_GPS` di SQL Server.
-6. **Pengaturan** — set nilai **Source** dan **Crop Year** yang berlaku
-   global: Source jadi default saat menambah Master Petani baru, dan
-   Crop Year otomatis dipakai di setiap titik lokasi baru — tidak perlu
-   diisi ulang setiap saat.
-7. **Laporan** — daftar & peta semua titik tersimpan, difilter per petani
-   dan per source, dengan marker 🚩/🔴 di peta (🔴 saat peta di-zoom
-   jauh supaya titik berdekatan tidak tumpang tindih). Tabel menampilkan
-   tanggal, kode & nama petani, type, koordinat lengkap (lat/long/alt),
-   dan Crop Year. Bisa diekspor ke **Excel** dengan kolom yang persis
-   sama seperti tabel `T_GPS` (`transID`, `SupplierID`, `Lat`, `Long`,
-   `Alt`, `Dates`, `CropYear`, `Source`, `dtRecord`, `dtModified`,
-   `UserModified`, `Username`, `rowguid`, `Remark`, `status`,
-   `userlogin`) — siap diimpor langsung ke SQL Server — atau ke
-   **gambar JPEG** peta.
-8. **Sinkronisasi Firebase** — push data lokal ke Firestore dan pull data
+5. **Catat Lokasi** — form record: tanggal, kode+nama petani, type, dan titik
+   GPS yang diambil langsung dari perangkat (`navigator.geolocation`),
+   ditampilkan di minimap Leaflet dan bisa digeser manual bila perlu.
+6. **Laporan** — daftar & peta semua titik tersimpan, difilter per petani
+   dan per source, dengan marker 🚩 di peta.
+7. **Sinkronisasi Firebase** — push data lokal ke Firestore dan pull data
    dari Firestore, dengan config Firebase disimpan di IndexedDB (tidak
    di-hardcode di kode sumber). Config bisa diisi manual atau diimpor
    langsung dari file JSON.
-9. **Backup / Restore JSON** — ekspor seluruh database ke satu file `.json`,
+8. **Backup / Restore JSON** — ekspor seluruh database ke satu file `.json`,
    dan impor kembali (upsert berdasarkan kunci masing-masing tabel).
-10. **PWA (Progressive Web App)** — bisa "Add to Home Screen" / dipasang
+9. **PWA (Progressive Web App)** — bisa "Add to Home Screen" / dipasang
    sebagai aplikasi di HP maupun desktop, punya app-shell yang tetap bisa
    dibuka offline (lewat service worker), dan navigasi utama berupa
    **bottom icon nav** (mirip aplikasi mobile) supaya tinggal tap ikon
    menu yang dituju.
-11. **Notifikasi custom** — ikon lonceng di pojok kanan atas menyimpan
+10. **Notifikasi custom** — ikon lonceng di pojok kanan atas menyimpan
     riwayat notifikasi dalam aplikasi (berhasil/gagal), dan bisa
     mengaktifkan notifikasi asli perangkat (Notification API) yang akan
     muncul saat aplikasi berjalan di background.
