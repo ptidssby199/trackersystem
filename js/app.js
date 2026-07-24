@@ -467,11 +467,21 @@ async function renderReportPage(main) {
 
     <div class="panel">
       <h3>Peta Titik Lokasi</h3>
+      <p class="map-legend">
+        <span>🚩 Titik lokasi (saat peta di-zoom dekat)</span>
+        <span>🔴 Titik berdekatan (saat peta di-zoom jauh, supaya tidak tumpang tindih)</span>
+      </p>
       <div id="reportMap" style="height:400px;border-radius:var(--radius);border:1px solid var(--paper-200);"></div>
+      <div class="toolbar" style="margin-top:12px;">
+        <button class="btn btn-ghost" id="btnExportMapJpeg">🖼 Export Peta (JPEG)</button>
+      </div>
     </div>
 
     <div class="panel">
       <h3>Daftar Titik (<span id="reportCount">0</span>)</h3>
+      <div class="toolbar">
+        <button class="btn btn-primary" id="btnExportExcel">⬇ Export Excel</button>
+      </div>
       <div class="table-wrap" id="reportTableWrap"></div>
     </div>
   `;
@@ -480,8 +490,11 @@ async function renderReportPage(main) {
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; OpenStreetMap contributors',
     maxZoom: 19,
+    crossOrigin: true,
   }).addTo(map);
   const markerLayer = L.layerGroup().addTo(map);
+
+  const ZOOM_FLAG_THRESHOLD = 14; // >= this zoom: show flags. Below it: show red dots.
 
   const flagIcon = L.divIcon({
     html: '🚩',
@@ -490,6 +503,16 @@ async function renderReportPage(main) {
     iconAnchor: [3, 22],
     popupAnchor: [4, -20],
   });
+
+  const dotIcon = L.divIcon({
+    html: '🔴',
+    className: 'dot-marker',
+    iconSize: [14, 14],
+    iconAnchor: [7, 7],
+    popupAnchor: [0, -8],
+  });
+
+  let currentRows = [];
 
   function renderTable(rows) {
     document.getElementById('reportCount').textContent = rows.length;
@@ -518,13 +541,14 @@ async function renderReportPage(main) {
       </table>`;
   }
 
-  function renderMap(rows) {
+  function renderMap(rows, opts = {}) {
     markerLayer.clearLayers();
     if (rows.length === 0) return;
+    const icon = map.getZoom() >= ZOOM_FLAG_THRESHOLD ? flagIcon : dotIcon;
     const latlngs = [];
     rows.forEach((r) => {
       const p = petaniByKode[r.kodePetani];
-      const m = L.marker([r.lat, r.lng], { icon: flagIcon }).addTo(markerLayer);
+      const m = L.marker([r.lat, r.lng], { icon }).addTo(markerLayer);
       m.bindPopup(`
         <strong>${esc(r.kodePetani)} — ${esc(r.namaPetani)}</strong><br/>
         Source: ${esc(p ? p.source : '-')}<br/>
@@ -534,12 +558,17 @@ async function renderReportPage(main) {
       `);
       latlngs.push([r.lat, r.lng]);
     });
+    if (opts.keepView) return;
     if (latlngs.length === 1) {
       map.setView(latlngs[0], 15);
     } else {
       map.fitBounds(L.latLngBounds(latlngs), { padding: [30, 30] });
     }
   }
+
+  // Re-pick flag vs red-dot icon whenever the zoom level changes,
+  // without re-fitting the view (that would fight the user's zoom/pan).
+  map.on('zoomend', () => renderMap(currentRows, { keepView: true }));
 
   function applyFilters() {
     const petaniVal = document.getElementById('fPetani').value;
@@ -552,12 +581,62 @@ async function renderReportPage(main) {
       }
       return true;
     });
+    currentRows = filtered;
     renderTable(filtered);
     renderMap(filtered);
   }
 
   document.getElementById('fPetani').addEventListener('change', applyFilters);
   document.getElementById('fSource').addEventListener('change', applyFilters);
+
+  document.getElementById('btnExportExcel').addEventListener('click', () => {
+    if (!currentRows.length) { toast('Tidak ada data untuk diekspor.', 'error'); return; }
+    const data = currentRows.map((r) => {
+      const p = petaniByKode[r.kodePetani];
+      return {
+        Tanggal: r.tanggal,
+        'Kode Petani': r.kodePetani,
+        'Nama Petani': r.namaPetani,
+        Source: p ? p.source : '',
+        Type: r.type,
+        Latitude: r.lat,
+        Longitude: r.lng,
+      };
+    });
+    const ws = XLSX.utils.json_to_sheet(data);
+    ws['!cols'] = [{ wch: 12 }, { wch: 14 }, { wch: 22 }, { wch: 14 }, { wch: 10 }, { wch: 12 }, { wch: 12 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Titik Lokasi');
+    XLSX.writeFile(wb, `laporan-titik-lokasi-${todayISO()}.xlsx`);
+    toast('Excel diunduh.', 'success');
+  });
+
+  document.getElementById('btnExportMapJpeg').addEventListener('click', async () => {
+    if (!currentRows.length) { toast('Tidak ada titik pada peta untuk diekspor.', 'error'); return; }
+    const btn = document.getElementById('btnExportMapJpeg');
+    btn.disabled = true;
+    try {
+      const mapEl = document.getElementById('reportMap');
+      const canvas = await html2canvas(mapEl, { useCORS: true, allowTaint: false, logging: false });
+      await new Promise((resolve) => {
+        canvas.toBlob((blob) => {
+          if (!blob) { toast('Gagal membuat gambar peta.', 'error'); resolve(); return; }
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `peta-titik-lokasi-${todayISO()}.jpg`;
+          a.click();
+          URL.revokeObjectURL(url);
+          toast('Gambar peta (JPEG) diunduh.', 'success');
+          resolve();
+        }, 'image/jpeg', 0.92);
+      });
+    } catch (err) {
+      toast('Gagal mengekspor peta: ' + err.message, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  });
 
   applyFilters();
 }
