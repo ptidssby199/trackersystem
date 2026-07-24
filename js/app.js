@@ -449,6 +449,18 @@ async function renderRecordPage(main) {
   });
 }
 
+function recordMarkerIcon() {
+  const typeVal = (document.getElementById('rType')?.value || '').toLowerCase();
+  const isWarehouse = typeVal && typeVal !== 'field';
+  return L.divIcon({
+    html: isWarehouse ? '🏭' : '🚩',
+    className: 'flag-marker',
+    iconSize: [26, 26],
+    iconAnchor: isWarehouse ? [13, 24] : [4, 24],
+    popupAnchor: [0, -22],
+  });
+}
+
 function initMiniMap() {
   const defaultCenter = [-6.2, 106.816]; // Jakarta fallback
   State.map = L.map('miniMap').setView(defaultCenter, 5);
@@ -457,11 +469,14 @@ function initMiniMap() {
     maxZoom: 19,
   }).addTo(State.map);
 
-  State.marker = L.marker(defaultCenter, { draggable: true }).addTo(State.map);
+  State.marker = L.marker(defaultCenter, { draggable: true, icon: recordMarkerIcon() }).addTo(State.map);
   State.marker.on('dragend', () => {
     const pos = State.marker.getLatLng();
     // Manual drag only repositions lat/lng; keep whatever altitude GPS last reported.
     setGpsValue(pos.lat, pos.lng, State.gps ? State.gps.alt : null);
+  });
+  document.getElementById('rType').addEventListener('change', () => {
+    State.marker.setIcon(recordMarkerIcon());
   });
   State.gps = null;
 }
@@ -537,8 +552,8 @@ async function renderReportPage(main) {
     <div class="panel">
       <h3>Peta Titik Lokasi</h3>
       <p class="map-legend">
-        <span>🚩 Titik lokasi (saat peta di-zoom dekat)</span>
-        <span>🔴 Titik berdekatan (saat peta di-zoom jauh, supaya tidak tumpang tindih)</span>
+        <span>🚩 Field &nbsp;·&nbsp; 🏭 Warehouse <em>(saat peta di-zoom dekat)</em></span>
+        <span>🔴 Field &nbsp;·&nbsp; 🟠 Warehouse <em>(saat peta di-zoom jauh, supaya tidak tumpang tindih)</em></span>
       </p>
       <div id="reportMap" style="height:400px;border-radius:var(--radius);border:1px solid var(--paper-200);"></div>
       <div class="toolbar" style="margin-top:12px;">
@@ -563,9 +578,9 @@ async function renderReportPage(main) {
   }).addTo(map);
   const markerLayer = L.layerGroup().addTo(map);
 
-  const ZOOM_FLAG_THRESHOLD = 14; // >= this zoom: show flags. Below it: show red dots.
+  const ZOOM_FLAG_THRESHOLD = 14; // >= this zoom: show flags. Below it: show small dots.
 
-  const flagIcon = L.divIcon({
+  const flagIconField = L.divIcon({
     html: '🚩',
     className: 'flag-marker',
     iconSize: [24, 24],
@@ -573,13 +588,36 @@ async function renderReportPage(main) {
     popupAnchor: [4, -20],
   });
 
-  const dotIcon = L.divIcon({
+  const flagIconWarehouse = L.divIcon({
+    html: '🏭',
+    className: 'flag-marker',
+    iconSize: [24, 24],
+    iconAnchor: [12, 22],
+    popupAnchor: [0, -20],
+  });
+
+  const dotIconField = L.divIcon({
     html: '🔴',
     className: 'dot-marker',
     iconSize: [14, 14],
     iconAnchor: [7, 7],
     popupAnchor: [0, -8],
   });
+
+  const dotIconWarehouse = L.divIcon({
+    html: '🟠',
+    className: 'dot-marker',
+    iconSize: [14, 14],
+    iconAnchor: [7, 7],
+    popupAnchor: [0, -8],
+  });
+
+  function iconFor(r) {
+    const isWarehouse = (r.type || '').toLowerCase() !== 'field';
+    const zoomedIn = map.getZoom() >= ZOOM_FLAG_THRESHOLD;
+    if (zoomedIn) return isWarehouse ? flagIconWarehouse : flagIconField;
+    return isWarehouse ? dotIconWarehouse : dotIconField;
+  }
 
   let currentRows = [];
 
@@ -610,10 +648,9 @@ async function renderReportPage(main) {
   function renderMap(rows, opts = {}) {
     markerLayer.clearLayers();
     if (rows.length === 0) return;
-    const icon = map.getZoom() >= ZOOM_FLAG_THRESHOLD ? flagIcon : dotIcon;
     const latlngs = [];
     rows.forEach((r) => {
-      const m = L.marker([r.lat, r.lng], { icon }).addTo(markerLayer);
+      const m = L.marker([r.lat, r.lng], { icon: iconFor(r) }).addTo(markerLayer);
       m.bindPopup(`
         <strong>${esc(r.kodePetani)} — ${esc(r.namaPetani)}</strong><br/>
         Type: ${esc(r.type)}<br/>
