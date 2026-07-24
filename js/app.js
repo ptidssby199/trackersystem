@@ -138,9 +138,30 @@ window.addEventListener('DOMContentLoaded', async () => {
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('service-worker.js').catch(() => {
+    navigator.serviceWorker.register('service-worker.js').then((reg) => {
+      // If a new version is already installed and waiting, activate it now.
+      if (reg.waiting) reg.waiting.postMessage('skipWaiting');
+      reg.addEventListener('updatefound', () => {
+        const newWorker = reg.installing;
+        if (!newWorker) return;
+        newWorker.addEventListener('statechange', () => {
+          if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+            newWorker.postMessage('skipWaiting');
+          }
+        });
+      });
+    }).catch(() => {
       // Offline install support just won't be available; the app still works online.
     });
+  });
+
+  // Once the new service worker takes control, reload once to pick up
+  // the fresh app shell (index.html/css/js) instead of stale cached files.
+  let refreshedOnce = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (refreshedOnce) return;
+    refreshedOnce = true;
+    window.location.reload();
   });
 }
 
