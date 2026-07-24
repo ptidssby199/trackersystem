@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>IDS Tracker System</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<!-- ===================== LOGIN SCREEN ===================== -->
+<div id="loginScreen">
+  <div class="login-card">
+    <div class="login-brand">
+      <span class="mark"></span>
+      <h1>IDS Tracker System</h1>
+    </div>
+    <p class="login-sub">Field location logging</p>
+
+    <form id="loginForm">
+      <div class="field">
+        <label for="loginId">ID Pegawai</label>
+        <input type="text" id="loginId" autocomplete="username" required />
+      </div>
+      <div class="field">
+        <label for="loginPassword">Password</label>
+        <input type="password" id="loginPassword" autocomplete="current-password" required />
+      </div>
+      <button type="submit" class="btn btn-primary btn-block">Masuk</button>
+      <div class="login-error" id="loginError"></div>
+    </form>
+
+    <div class="login-hint">
+      Login pertama kali? Gunakan <strong>admin</strong> / <strong>admin123</strong>,
+      lalu buat akun pegawai lain di menu Master Employee.
+    </div>
+  </div>
+</div>
+
+<!-- ===================== APP SHELL ===================== -->
+<div id="appShell" class="hidden">
+  <div class="topbar">
+    <div class="topbar-brand"><span class="mark"></span> IDS Tracker System</div>
+    <div class="topbar-user">
+      <span id="userLabel"></span>
+      <button id="logoutBtn">Keluar</button>
+    </div>
+  </div>
+
+  <div class="layout">
+    <div class="sidebar" id="sidebar">
+      <div class="nav-item active" data-page="record"><span class="n">01</span><span class="label">Catat Lokasi</span></div>
+      <div class="nav-item" data-page="petani"><span class="n">02</span><span class="label">Master Petani</span></div>
+      <div class="nav-item" data-page="type"><span class="n">03</span><span class="label">Type</span></div>
+      <div class="nav-item" data-page="employee"><span class="n">04</span><span class="label">Master Employee</span></div>
+      <div class="nav-item" data-page="sync"><span class="n">05</span><span class="label">Sinkronisasi</span></div>
+      <div class="nav-item" data-page="backup"><span class="n">06</span><span class="label">Backup / Restore</span></div>
+    </div>
+
+    <div class="main" id="mainContent">
+      <!-- pages rendered here by app.js -->
+    </div>
+  </div>
+</div>
+
+<div id="toastHost"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="js/db.js"></script>
+<script type="module" src="js/sync.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
