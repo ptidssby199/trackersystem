@@ -611,28 +611,40 @@ async function renderReportPage(main) {
   document.getElementById('fSource').addEventListener('change', applyFilters);
 
   document.getElementById('btnExportExcel').addEventListener('click', () => {
+    if (typeof XLSX === 'undefined') {
+      toast('Library Excel gagal dimuat (cek koneksi internet), coba muat ulang halaman.', 'error');
+      return;
+    }
     if (!currentRows.length) { toast('Tidak ada data untuk diekspor.', 'error'); return; }
-    const data = currentRows.map((r) => {
-      const p = petaniByKode[r.kodePetani];
-      return {
-        Tanggal: r.tanggal,
-        'Kode Petani': r.kodePetani,
-        'Nama Petani': r.namaPetani,
-        Source: p ? p.source : '',
-        Type: r.type,
-        Latitude: r.lat,
-        Longitude: r.lng,
-      };
-    });
-    const ws = XLSX.utils.json_to_sheet(data);
-    ws['!cols'] = [{ wch: 12 }, { wch: 14 }, { wch: 22 }, { wch: 14 }, { wch: 10 }, { wch: 12 }, { wch: 12 }];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Titik Lokasi');
-    XLSX.writeFile(wb, `laporan-titik-lokasi-${todayISO()}.xlsx`);
-    toast('Excel diunduh.', 'success');
+    try {
+      const data = currentRows.map((r) => {
+        const p = petaniByKode[r.kodePetani];
+        return {
+          Tanggal: r.tanggal,
+          'Kode Petani': r.kodePetani,
+          'Nama Petani': r.namaPetani,
+          Source: p ? p.source : '',
+          Type: r.type,
+          Latitude: r.lat,
+          Longitude: r.lng,
+        };
+      });
+      const ws = XLSX.utils.json_to_sheet(data);
+      ws['!cols'] = [{ wch: 12 }, { wch: 14 }, { wch: 22 }, { wch: 14 }, { wch: 10 }, { wch: 12 }, { wch: 12 }];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Titik Lokasi');
+      XLSX.writeFile(wb, `laporan-titik-lokasi-${todayISO()}.xlsx`);
+      toast('Excel diunduh.', 'success');
+    } catch (err) {
+      toast('Gagal membuat file Excel: ' + err.message, 'error');
+    }
   });
 
   document.getElementById('btnExportMapJpeg').addEventListener('click', async () => {
+    if (typeof html2canvas === 'undefined') {
+      toast('Library gambar peta gagal dimuat (cek koneksi internet), coba muat ulang halaman.', 'error');
+      return;
+    }
     if (!currentRows.length) { toast('Tidak ada titik pada peta untuk diekspor.', 'error'); return; }
     const btn = document.getElementById('btnExportMapJpeg');
     btn.disabled = true;
