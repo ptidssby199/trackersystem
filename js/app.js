@@ -79,58 +79,37 @@ function todayISO() {
   return d.toISOString().slice(0, 10);
 }
 
-// ---------------------------------------------------------------
-// App-wide settings (Source & CropYear) — configured once in the
-// Pengaturan menu, then followed everywhere else in the app.
-// ---------------------------------------------------------------
-async function getAppSettings() {
-  const row = await DB.get('config', 'appSettings');
-  return row || { key: 'appSettings', source: '', cropYear: '' };
-}
-
-async function saveAppSettings(obj) {
-  await DB.put('config', { key: 'appSettings', ...obj });
-}
-
-// SQL Server datetime string, matching how T_GPS.dtRecord / dtModified /
-// Dates actually render, e.g. "2026-07-24 11:41:05.000".
+// Formats a Date as 'YYYY-MM-DD HH.MM.SS' (dot-separated time), the
+// datetime format expected by the SQL Server sync target.
 function formatSqlDateTime(d = new Date()) {
-  const pad = (n, len = 2) => String(n).padStart(len, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} `
+    + `${pad(d.getHours())}.${pad(d.getMinutes())}.${pad(d.getSeconds())}`;
 }
 
-// transID in T_GPS is a signed 32-bit SQL "int" (values there run negative
-// too, e.g. -2142883594), so generate within the full Int32 range rather
-// than a plain positive 10-digit number.
-function genTransId(existingIds) {
+// Generates a unique 10-digit numeric transaction ID (as a string, so
+// leading behaviour is stable and it round-trips cleanly to SQL Server).
+async function generateTransId() {
+  const existing = new Set((await DB.getAll('records')).map((r) => r.transId));
   let id;
   do {
-    id = Math.floor(Math.random() * 4294967296) - 2147483648;
-  } while (existingIds && existingIds.has(id));
+    id = String(Math.floor(1000000000 + Math.random() * 9000000000));
+  } while (existing.has(id));
   return id;
 }
 
-// GUID for T_GPS.rowguid, e.g. "869ACB95-7C4F-3AC1-A075-05B503D65EBD".
-function genRowGuid() {
-  if (window.crypto && crypto.randomUUID) return crypto.randomUUID().toUpperCase();
-  // Fallback for older browsers without crypto.randomUUID.
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  }).toUpperCase();
+// Global app settings (Source & CropYear), managed from the Setting menu.
+// Once set, every new petani/record automatically follows these values.
+const DEFAULT_APP_SETTINGS = { source: '', cropYear: new Date().getFullYear() };
+async function getAppSettings() {
+  const row = await DB.get('config', 'appSettings').catch(() => null);
+  return { ...DEFAULT_APP_SETTINGS, ...(row || {}) };
 }
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[c]));
-}
-
-// r.tanggal / dtRecord / dtModified are stored with millisecond precision
-// (to match T_GPS exactly); trim that for a cleaner on-screen display.
-function fmtDt(s) {
-  return String(s ?? '').replace(/\.\d{3}$/, '');
 }
 
 function normalizeConfigKeys(obj) {
@@ -330,8 +309,8 @@ async function renderPage() {
     case 'petani': return renderPetaniPage(main);
     case 'type': return renderTypePage(main);
     case 'employee': return renderEmployeePage(main);
-    case 'setting': return renderSettingPage(main);
     case 'laporan': return renderReportPage(main);
+    case 'settings': return renderSettingsPage(main);
     case 'sync': return renderSyncPage(main);
     case 'backup': return renderBackupPage(main);
     default: main.innerHTML = '<p>Halaman tidak ditemukan.</p>';
@@ -345,11 +324,6 @@ async function renderRecordPage(main) {
   State.petaniCache = await DB.getAll('petani');
   State.typeCache = await DB.getAll('types');
   const records = (await DB.getAll('records')).sort((a, b) => b.id - a.id);
-  const settings = await getAppSettings();
-  const existingTransIds = new Set(records.map((r) => r.transId).filter((v) => v !== undefined && v !== null));
-  const transId = genTransId(existingTransIds);
-  const nowLocal = new Date();
-  const nowLocalValue = `${nowLocal.getFullYear()}-${String(nowLocal.getMonth() + 1).padStart(2, '0')}-${String(nowLocal.getDate()).padStart(2, '0')}T${String(nowLocal.getHours()).padStart(2, '0')}:${String(nowLocal.getMinutes()).padStart(2, '0')}`;
 
   main.innerHTML = `
     <p class="page-eyebrow">Menu 01</p>
@@ -366,8 +340,8 @@ async function renderRecordPage(main) {
       <form id="recordForm">
         <div class="grid-2">
           <div class="field">
-            <label for="rTanggal">Tanggal &amp; Waktu Kunjungan</label>
-            <input type="datetime-local" id="rTanggal" value="${nowLocalValue}" required />
+            <label for="rTanggal">Tanggal Record</label>
+            <input type="date" id="rTanggal" value="${todayISO()}" required />
           </div>
           <div class="field">
             <label for="rType">Type</label>
@@ -386,28 +360,16 @@ async function renderRecordPage(main) {
           ${State.petaniCache.length === 0 ? '<div class="hint-text">Belum ada data petani. Tambahkan dulu di menu Master Petani.</div>' : ''}
         </div>
 
-        <div class="grid-2">
-          <div class="field">
-            <label>Trans ID <span class="hint-inline">(otomatis)</span></label>
-            <input type="text" id="rTransId" value="${esc(transId)}" readonly />
-          </div>
-          <div class="field">
-            <label>Crop Year <span class="hint-inline">(dari Pengaturan)</span></label>
-            <input type="text" id="rCropYear" value="${esc(settings.cropYear)}" readonly />
-          </div>
-        </div>
-        ${!settings.cropYear ? '<div class="hint-text" style="color:var(--danger);margin-top:-8px;margin-bottom:14px;">Crop Year belum diatur. Isi dulu di menu Pengaturan sebelum menyimpan titik lokasi.</div>' : ''}
-
-        <div class="field">
-          <label for="rRemark">Catatan (Remark)</label>
-          <input type="text" id="rRemark" placeholder="Opsional — kosongkan jika tidak ada" />
-        </div>
-
         <div class="gps-box">
           <button type="button" class="btn btn-primary" id="btnGetGps">📍 Ambil Lokasi GPS</button>
           <div class="gps-coords" id="gpsCoords">Belum ada koordinat</div>
           <div id="miniMap"></div>
-          <div class="hint-text">Geser marker pada peta untuk menyesuaikan titik secara manual bila perlu. Altitude hanya terisi otomatis dari GPS perangkat, bukan dari geser manual.</div>
+          <div class="hint-text">Geser marker pada peta untuk menyesuaikan titik secara manual bila perlu.</div>
+        </div>
+
+        <div class="field">
+          <label for="rRemark">Catatan / Remark (opsional)</label>
+          <input type="text" id="rRemark" placeholder="Kosongkan jika tidak ada catatan (default: -)" />
         </div>
 
         <div class="form-actions">
@@ -421,16 +383,16 @@ async function renderRecordPage(main) {
       <div class="table-wrap">
         ${records.length === 0 ? '<div class="empty-state">Belum ada titik lokasi tercatat.</div>' : `
         <table>
-          <thead><tr><th>Tanggal</th><th>Kode Petani</th><th>Nama Petani</th><th>Type</th><th>Crop Year</th><th>Koordinat</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Tanggal</th><th>Kode Petani</th><th>Nama Petani</th><th>Type</th><th>Koordinat (Lat, Long, Alt)</th><th>Crop Year</th><th>Status</th><th></th></tr></thead>
           <tbody>
             ${records.slice(0, 25).map(r => `
               <tr>
-                <td>${esc(fmtDt(r.tanggal))}</td>
+                <td>${esc(r.tanggal)}</td>
                 <td>${esc(r.kodePetani)}</td>
                 <td>${esc(r.namaPetani)}</td>
                 <td><span class="badge ${r.type.toLowerCase() === 'field' ? 'field' : 'warehouse'}">${esc(r.type)}</span></td>
-                <td>${esc(r.cropYear || '-')}</td>
-                <td style="font-family:var(--mono);font-size:0.78rem">${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}</td>
+                <td style="font-family:var(--mono);font-size:0.78rem">${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}, ${r.altitude != null ? r.altitude.toFixed(1) : '-'}</td>
+                <td>${esc(r.cropYear ?? '-')}</td>
                 <td><span class="badge ${r.syncStatus === 'synced' ? 'synced' : 'pending'}">${r.syncStatus === 'synced' ? 'Tersinkron' : 'Belum sinkron'}</span></td>
                 <td class="table-actions"><button class="btn btn-danger btn-sm" data-del-record="${r.id}">Hapus</button></td>
               </tr>
@@ -448,33 +410,29 @@ async function renderRecordPage(main) {
   document.getElementById('recordForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     if (!State.gps) { toast('Ambil koordinat GPS terlebih dahulu.', 'error'); return; }
-    if (!settings.cropYear) { toast('Crop Year belum diatur di menu Pengaturan.', 'error'); return; }
     const kodePetani = document.getElementById('rPetani').value;
     const petani = State.petaniCache.find(p => p.kodePetani === kodePetani);
-    const remarkVal = document.getElementById('rRemark').value.trim();
-    const visitDate = new Date(document.getElementById('rTanggal').value);
-    const now = new Date();
+    const settings = await getAppSettings();
+    const remarkInput = document.getElementById('rRemark').value.trim();
     const record = {
-      transId: Number(document.getElementById('rTransId').value),
-      rowguid: genRowGuid(),
-      tanggal: formatSqlDateTime(visitDate), // maps to T_GPS.Dates
+      transId: await generateTransId(),
+      tanggal: document.getElementById('rTanggal').value,
       kodePetani,
-      namaPetani: petani ? petani.namaPetani : '', // convenience only, not a T_GPS column
-      type: document.getElementById('rType').value, // maps to T_GPS.status
+      namaPetani: petani ? petani.namaPetani : '',
+      type: document.getElementById('rType').value,
       lat: State.gps.lat,
       lng: State.gps.lng,
-      alt: State.gps.alt ?? null,
+      altitude: State.gps.alt ?? null,
       cropYear: settings.cropYear,
-      source: petani ? petani.source : '',
-      supplierConversion: petani ? petani.petaniConversion : '',
-      remark: remarkVal || '-',
-      userLogin: State.user.kodenik,
+      supplier: (petani && petani.source) || settings.source || '',
+      conversion: (petani && petani.petaniConversion) || '-',
+      remark: remarkInput || '-',
       userModified: 'sync',
       username: 'sync',
-      dtRecord: formatSqlDateTime(now),
-      dtModified: formatSqlDateTime(now),
-      syncStatus: 'pending', // local-only flag, not a T_GPS column
-      createdAt: now.toISOString(),
+      userLogin: State.user.kodenik,
+      kodenikPencatat: State.user.kodenik,
+      syncStatus: 'pending',
+      createdAt: formatSqlDateTime(new Date()),
     };
     await DB.put('records', record);
     toast('Titik lokasi tersimpan.', 'success');
@@ -502,6 +460,7 @@ function initMiniMap() {
   State.marker = L.marker(defaultCenter, { draggable: true }).addTo(State.map);
   State.marker.on('dragend', () => {
     const pos = State.marker.getLatLng();
+    // Manual drag only repositions lat/lng; keep whatever altitude GPS last reported.
     setGpsValue(pos.lat, pos.lng, State.gps ? State.gps.alt : null);
   });
   State.gps = null;
@@ -535,9 +494,10 @@ function captureGps() {
 }
 
 function setGpsValue(lat, lng, alt) {
-  State.gps = { lat, lng, alt: (alt === null || alt === undefined || Number.isNaN(alt)) ? null : alt };
-  const altText = State.gps.alt === null ? 'Alt: -' : `Alt: ${State.gps.alt.toFixed(1)} m`;
-  document.getElementById('gpsCoords').textContent = `Lat: ${lat.toFixed(6)}  ·  Lng: ${lng.toFixed(6)}  ·  ${altText}`;
+  State.gps = { lat, lng, alt: (alt === null || alt === undefined) ? null : alt };
+  const altText = State.gps.alt === null ? '- (tidak tersedia)' : `${State.gps.alt.toFixed(1)} m`;
+  document.getElementById('gpsCoords').textContent =
+    `Lat: ${lat.toFixed(6)}  ·  Lng: ${lng.toFixed(6)}  ·  Alt: ${altText}`;
   document.getElementById('btnSaveRecord').disabled = false;
 }
 
@@ -551,7 +511,7 @@ async function renderReportPage(main) {
   const sources = [...new Set(petaniList.map((p) => p.source).filter(Boolean))].sort();
 
   main.innerHTML = `
-    <p class="page-eyebrow">Menu 06</p>
+    <p class="page-eyebrow">Menu 05</p>
     <div class="page-head"><h2>Laporan Titik Petani</h2></div>
 
     <div class="panel">
@@ -634,18 +594,15 @@ async function renderReportPage(main) {
       <table>
         <thead><tr><th>Tanggal</th><th>Kode Petani</th><th>Nama Petani</th><th>Type</th><th>Koordinat (Lat, Long, Alt)</th><th>Crop Year</th></tr></thead>
         <tbody>
-          ${rows.map(r => {
-            const altText = (r.alt === null || r.alt === undefined) ? '-' : `${Number(r.alt).toFixed(1)} m`;
-            return `
+          ${rows.map(r => `
               <tr>
-                <td>${esc(fmtDt(r.tanggal))}</td>
+                <td>${esc(r.tanggal)}</td>
                 <td>${esc(r.kodePetani)}</td>
                 <td>${esc(r.namaPetani)}</td>
                 <td><span class="badge ${r.type.toLowerCase() === 'field' ? 'field' : 'warehouse'}">${esc(r.type)}</span></td>
-                <td style="font-family:var(--mono);font-size:0.78rem">${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}, ${altText}</td>
-                <td>${esc(r.cropYear || '-')}</td>
-              </tr>`;
-          }).join('')}
+                <td style="font-family:var(--mono);font-size:0.78rem">${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}, ${r.altitude != null ? r.altitude.toFixed(1) : '-'}</td>
+                <td>${esc(r.cropYear ?? '-')}</td>
+              </tr>`).join('')}
         </tbody>
       </table>`;
   }
@@ -656,15 +613,13 @@ async function renderReportPage(main) {
     const icon = map.getZoom() >= ZOOM_FLAG_THRESHOLD ? flagIcon : dotIcon;
     const latlngs = [];
     rows.forEach((r) => {
-      const p = petaniByKode[r.kodePetani];
       const m = L.marker([r.lat, r.lng], { icon }).addTo(markerLayer);
       m.bindPopup(`
         <strong>${esc(r.kodePetani)} — ${esc(r.namaPetani)}</strong><br/>
-        Source: ${esc(p ? p.source : '-')}<br/>
         Type: ${esc(r.type)}<br/>
-        Crop Year: ${esc(r.cropYear || '-')}<br/>
-        Tanggal: ${esc(fmtDt(r.tanggal))}<br/>
-        ${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}, Alt: ${(r.alt === null || r.alt === undefined) ? '-' : Number(r.alt).toFixed(1) + ' m'}
+        Tanggal: ${esc(r.tanggal)}<br/>
+        Crop Year: ${esc(r.cropYear ?? '-')}<br/>
+        ${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}, ${r.altitude != null ? r.altitude.toFixed(1) : '-'}
       `);
       latlngs.push([r.lat, r.lng]);
     });
@@ -706,32 +661,18 @@ async function renderReportPage(main) {
     }
     if (!currentRows.length) { toast('Tidak ada data untuk diekspor.', 'error'); return; }
     try {
-      // Column order/names match T_GPS in SQL Server exactly, so this
-      // file can be imported directly (Import Flat File / bcp / SSMS).
       const data = currentRows.map((r) => ({
-        transID: r.transId ?? '',
-        SupplierID: r.kodePetani,
-        Lat: r.lat,
-        Long: r.lng,
-        Alt: r.alt === null || r.alt === undefined ? '' : r.alt,
-        Dates: r.tanggal,
-        CropYear: r.cropYear || '',
-        Source: r.source || '',
-        dtRecord: r.dtRecord || '',
-        dtModified: r.dtModified || '',
-        UserModified: r.userModified || 'sync',
-        Username: r.username || 'sync',
-        rowguid: r.rowguid || '',
-        Remark: r.remark || '-',
-        status: r.type,
-        userlogin: r.userLogin || '',
+        Tanggal: r.tanggal,
+        'Kode Petani': r.kodePetani,
+        'Nama Petani': r.namaPetani,
+        Type: r.type,
+        Latitude: r.lat,
+        Longitude: r.lng,
+        Altitude: r.altitude != null ? r.altitude : '',
+        'Crop Year': r.cropYear ?? '',
       }));
       const ws = XLSX.utils.json_to_sheet(data);
-      ws['!cols'] = [
-        { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 8 }, { wch: 20 },
-        { wch: 10 }, { wch: 10 }, { wch: 20 }, { wch: 20 }, { wch: 12 }, { wch: 10 },
-        { wch: 36 }, { wch: 14 }, { wch: 10 }, { wch: 12 },
-      ];
+      ws['!cols'] = [{ wch: 12 }, { wch: 14 }, { wch: 22 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 10 }];
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Titik Lokasi');
       XLSX.writeFile(wb, `laporan-titik-lokasi-${todayISO()}.xlsx`);
@@ -776,12 +717,67 @@ async function renderReportPage(main) {
 }
 
 // ---------------------------------------------------------------
+// PAGE: Setting (global Source & CropYear)
+// ---------------------------------------------------------------
+async function renderSettingsPage(main) {
+  const settings = await getAppSettings();
+  main.innerHTML = `
+    <p class="page-eyebrow">Menu 06</p>
+    <div class="page-head"><h2>Pengaturan</h2></div>
+
+    <div class="panel">
+      <h3>Source &amp; Crop Year Global</h3>
+      <p class="hint-text">
+        Nilai di sini berlaku untuk seluruh aplikasi. Setelah disimpan, semua Petani baru dan
+        Titik Lokasi baru akan otomatis mengikuti nilai ini — tidak perlu diisi manual lagi.
+      </p>
+      <form id="settingsForm">
+        <div class="grid-2">
+          <div class="field">
+            <label for="sSource">Source</label>
+            <input type="text" id="sSource" value="${esc(settings.source)}" placeholder="mis. Nama proyek / vendor" />
+          </div>
+          <div class="field">
+            <label for="sCropYear">Crop Year</label>
+            <input type="number" id="sCropYear" value="${esc(settings.cropYear)}" min="2000" max="2100" required />
+          </div>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">Simpan Pengaturan</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="panel">
+      <h3>Pengaturan Aktif Saat Ini</h3>
+      <table>
+        <tbody>
+          <tr><td style="width:160px;"><strong>Source</strong></td><td>${esc(settings.source) || '<span class="hint-text">(belum diatur)</span>'}</td></tr>
+          <tr><td><strong>Crop Year</strong></td><td>${esc(settings.cropYear)}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  document.getElementById('settingsForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const newSettings = {
+      key: 'appSettings',
+      source: document.getElementById('sSource').value.trim(),
+      cropYear: Number(document.getElementById('sCropYear').value),
+    };
+    await DB.put('config', newSettings);
+    toast('Pengaturan Source & Crop Year tersimpan.', 'success');
+    renderSettingsPage(main);
+  });
+}
+
+// ---------------------------------------------------------------
 // PAGE: Master Petani
 // ---------------------------------------------------------------
 async function renderPetaniPage(main) {
   const rows = await DB.getAll('petani');
   const settings = await getAppSettings();
-  const defaultSource = State.editingPetani ? '' : settings.source;
   main.innerHTML = `
     <p class="page-eyebrow">Menu 02</p>
     <div class="page-head"><h2>Master Petani</h2></div>
@@ -796,8 +792,8 @@ async function renderPetaniPage(main) {
         <div class="grid-2">
           <div class="field">
             <label>Source</label>
-            <input type="text" id="pSource" value="${esc(defaultSource)}" />
-            ${settings.source ? `<div class="hint-text">Default mengikuti Pengaturan: ${esc(settings.source)}</div>` : ''}
+            <input type="text" value="${esc(settings.source) || '(belum diatur)'}" disabled />
+            <div class="hint-text">Mengikuti Pengaturan Source di menu Setting.</div>
           </div>
           <div class="field"><label>Petani Conversion</label><input type="text" id="pConversion" /></div>
         </div>
@@ -842,10 +838,11 @@ async function renderPetaniPage(main) {
     if (isNew && await DB.get('petani', kode)) {
       toast('Kode petani sudah dipakai.', 'error'); return;
     }
+    const currentSettings = await getAppSettings();
     await DB.put('petani', {
       kodePetani: kode,
       namaPetani: document.getElementById('pNama').value.trim(),
-      source: document.getElementById('pSource').value.trim(),
+      source: currentSettings.source,
       petaniConversion: document.getElementById('pConversion').value.trim(),
       kodeFT: document.getElementById('pKodeFT').value.trim(),
     });
@@ -864,7 +861,6 @@ async function renderPetaniPage(main) {
       document.getElementById('pKode').value = p.kodePetani;
       document.getElementById('pKode').disabled = true;
       document.getElementById('pNama').value = p.namaPetani || '';
-      document.getElementById('pSource').value = p.source || '';
       document.getElementById('pConversion').value = p.petaniConversion || '';
       document.getElementById('pKodeFT').value = p.kodeFT || '';
       cancelBtn.classList.remove('hidden');
@@ -1061,43 +1057,8 @@ async function renderEmployeePage(main) {
 }
 
 // ---------------------------------------------------------------
-// PAGE: Pengaturan (global Source & CropYear)
+// PAGE: Sinkronisasi Firebase
 // ---------------------------------------------------------------
-async function renderSettingPage(main) {
-  const settings = await getAppSettings();
-  main.innerHTML = `
-    <p class="page-eyebrow">Menu 05</p>
-    <div class="page-head"><h2>Pengaturan</h2></div>
-
-    <div class="panel">
-      <h3>Source &amp; Crop Year Aktif</h3>
-      <p class="hint-text">
-        Nilai di sini menjadi acuan tunggal untuk seluruh aplikasi:
-        <strong>Source</strong> akan mengisi otomatis Master Petani baru, dan
-        <strong>Crop Year</strong> akan otomatis dipakai pada setiap titik
-        lokasi baru yang dicatat — tidak perlu diketik ulang setiap saat.
-      </p>
-      <form id="settingForm">
-        <div class="grid-2">
-          <div class="field"><label>Source</label><input type="text" id="sSource" value="${esc(settings.source)}" placeholder="mis. Local, Import, dst." /></div>
-          <div class="field"><label>Crop Year</label><input type="text" id="sCropYear" value="${esc(settings.cropYear)}" placeholder="mis. 2026" /></div>
-        </div>
-        <div class="form-actions">
-          <button type="submit" class="btn btn-primary">Simpan Pengaturan</button>
-        </div>
-      </form>
-    </div>
-  `;
-
-  document.getElementById('settingForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    await saveAppSettings({
-      source: document.getElementById('sSource').value.trim(),
-      cropYear: document.getElementById('sCropYear').value.trim(),
-    });
-    toast('Pengaturan tersimpan.', 'success');
-  });
-}
 async function renderSyncPage(main) {
   const cfg = (window.Sync && await Sync.getConfig()) || {};
   main.innerHTML = `
@@ -1244,7 +1205,6 @@ async function renderBackupPage(main) {
       types: await DB.getAll('types'),
       employees: await DB.getAll('employees'),
       records: await DB.getAll('records'),
-      settings: await getAppSettings(),
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -1272,7 +1232,6 @@ async function renderBackupPage(main) {
       if (data.types) { await DB.bulkPut('types', data.types); logBox.textContent += `Type: ${data.types.length} baris\n`; }
       if (data.employees) { await DB.bulkPut('employees', data.employees); logBox.textContent += `Employee: ${data.employees.length} baris\n`; }
       if (data.records) { await DB.bulkPut('records', data.records); logBox.textContent += `Records: ${data.records.length} baris\n`; }
-      if (data.settings) { await saveAppSettings(data.settings); logBox.textContent += `Pengaturan Source/Crop Year dipulihkan\n`; }
       logBox.textContent += 'Restore selesai.';
       toast('Restore berhasil.', 'success');
     } catch (err) {
