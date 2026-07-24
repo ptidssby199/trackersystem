@@ -2,8 +2,21 @@
 <html lang="id">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>IDS Tracker System</title>
+<meta name="description" content="Pencatat titik lokasi GPS field & gudang petani, offline-first dengan sinkronisasi Firebase." />
+
+<!-- PWA -->
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#1c2116" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="IDS Tracker" />
+<link rel="icon" href="icons/favicon-32.png" sizes="32x32" type="image/png" />
+<link rel="icon" href="icons/favicon-16.png" sizes="16x16" type="image/png" />
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -44,27 +57,67 @@
 <div id="appShell" class="hidden">
   <div class="topbar">
     <div class="topbar-brand"><span class="mark"></span> IDS Tracker System</div>
-    <div class="topbar-user">
-      <span id="userLabel"></span>
-      <button id="logoutBtn">Keluar</button>
+    <div class="topbar-actions">
+      <button id="installBtn" class="icon-btn hidden" title="Pasang aplikasi">
+        <svg viewBox="0 0 24 24"><path d="M12 3v12m0 0-4.5-4.5M12 15l4.5-4.5M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+      </button>
+      <div class="notif-wrap">
+        <button id="notifBellBtn" class="icon-btn" title="Notifikasi">
+          <svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 1 1 12 0c0 4 1.5 5.5 2 6H4c.5-.5 2-2 2-6Z"/><path d="M9.5 18a2.5 2.5 0 0 0 5 0"/></svg>
+          <span class="notif-dot hidden" id="notifDot"></span>
+        </button>
+        <div class="notif-panel hidden" id="notifPanel">
+          <div class="notif-panel-head">
+            <span>Notifikasi</span>
+            <button id="notifClearBtn" class="link-btn">Bersihkan</button>
+          </div>
+          <div class="notif-list" id="notifList"><div class="empty-state">Belum ada notifikasi.</div></div>
+          <button id="notifEnableBtn" class="notif-enable hidden">🔔 Aktifkan notifikasi perangkat</button>
+        </div>
+      </div>
+      <span id="userLabel" class="topbar-user-label"></span>
+      <button id="logoutBtn" class="icon-btn" title="Keluar">
+        <svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
+      </button>
     </div>
   </div>
 
   <div class="layout">
-    <div class="sidebar" id="sidebar">
-      <div class="nav-item active" data-page="record"><span class="n">01</span><span class="label">Catat Lokasi</span></div>
-      <div class="nav-item" data-page="petani"><span class="n">02</span><span class="label">Master Petani</span></div>
-      <div class="nav-item" data-page="type"><span class="n">03</span><span class="label">Type</span></div>
-      <div class="nav-item" data-page="employee"><span class="n">04</span><span class="label">Master Employee</span></div>
-      <div class="nav-item" data-page="laporan"><span class="n">05</span><span class="label">Laporan</span></div>
-      <div class="nav-item" data-page="sync"><span class="n">06</span><span class="label">Sinkronisasi</span></div>
-      <div class="nav-item" data-page="backup"><span class="n">07</span><span class="label">Backup / Restore</span></div>
-    </div>
-
     <div class="main" id="mainContent">
       <!-- pages rendered here by app.js -->
     </div>
   </div>
+
+  <nav class="bottom-nav" id="bottomNav">
+    <button class="bn-item active" data-page="record" title="Catat Lokasi">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="8"/></svg>
+      <span>Catat</span>
+    </button>
+    <button class="bn-item" data-page="petani" title="Master Petani">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.2"/><path d="M5 20c0-3.9 3.1-6.5 7-6.5s7 2.6 7 6.5"/></svg>
+      <span>Petani</span>
+    </button>
+    <button class="bn-item" data-page="type" title="Type">
+      <svg viewBox="0 0 24 24"><path d="M11 3 3 8.5 11 14l8-5.5L11 3Z"/><path d="M3 15.5 11 21l8-5.5"/></svg>
+      <span>Type</span>
+    </button>
+    <button class="bn-item" data-page="employee" title="Master Employee">
+      <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2.2"/><circle cx="10" cy="10.5" r="1.9"/><path d="M7 16c.6-1.8 1.9-2.7 3-2.7s2.4.9 3 2.7"/><path d="M14.5 9h3M14.5 12h3"/></svg>
+      <span>Pegawai</span>
+    </button>
+    <button class="bn-item" data-page="laporan" title="Laporan">
+      <svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M20 20H4"/></svg>
+      <span>Laporan</span>
+    </button>
+    <button class="bn-item" data-page="sync" title="Sinkronisasi">
+      <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.6-5.7L20 8"/><path d="M20 4v4h-4"/><path d="M20 12a8 8 0 0 1-13.6 5.7L4 16"/><path d="M4 20v-4h4"/></svg>
+      <span>Sync</span>
+    </button>
+    <button class="bn-item" data-page="backup" title="Backup / Restore">
+      <svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="5" rx="1.3"/><path d="M5 9v8.5A2.5 2.5 0 0 0 7.5 20h9a2.5 2.5 0 0 0 2.5-2.5V9"/><path d="M10 13.5h4"/></svg>
+      <span>Backup</span>
+    </button>
+  </nav>
 </div>
 
 <div id="toastHost"></div>
