@@ -79,10 +79,58 @@ function todayISO() {
   return d.toISOString().slice(0, 10);
 }
 
+// ---------------------------------------------------------------
+// App-wide settings (Source & CropYear) — configured once in the
+// Pengaturan menu, then followed everywhere else in the app.
+// ---------------------------------------------------------------
+async function getAppSettings() {
+  const row = await DB.get('config', 'appSettings');
+  return row || { key: 'appSettings', source: '', cropYear: '' };
+}
+
+async function saveAppSettings(obj) {
+  await DB.put('config', { key: 'appSettings', ...obj });
+}
+
+// SQL Server datetime string, matching how T_GPS.dtRecord / dtModified /
+// Dates actually render, e.g. "2026-07-24 11:41:05.000".
+function formatSqlDateTime(d = new Date()) {
+  const pad = (n, len = 2) => String(n).padStart(len, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+}
+
+// transID in T_GPS is a signed 32-bit SQL "int" (values there run negative
+// too, e.g. -2142883594), so generate within the full Int32 range rather
+// than a plain positive 10-digit number.
+function genTransId(existingIds) {
+  let id;
+  do {
+    id = Math.floor(Math.random() * 4294967296) - 2147483648;
+  } while (existingIds && existingIds.has(id));
+  return id;
+}
+
+// GUID for T_GPS.rowguid, e.g. "869ACB95-7C4F-3AC1-A075-05B503D65EBD".
+function genRowGuid() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID().toUpperCase();
+  // Fallback for older browsers without crypto.randomUUID.
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  }).toUpperCase();
+}
+
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[c]));
+}
+
+// r.tanggal / dtRecord / dtModified are stored with millisecond precision
+// (to match T_GPS exactly); trim that for a cleaner on-screen display.
+function fmtDt(s) {
+  return String(s ?? '').replace(/\.\d{3}$/, '');
 }
 
 function normalizeConfigKeys(obj) {
@@ -282,6 +330,7 @@ async function renderPage() {
     case 'petani': return renderPetaniPage(main);
     case 'type': return renderTypePage(main);
     case 'employee': return renderEmployeePage(main);
+    case 'setting': return renderSettingPage(main);
     case 'laporan': return renderReportPage(main);
     case 'sync': return renderSyncPage(main);
     case 'backup': return renderBackupPage(main);
@@ -296,6 +345,11 @@ async function renderRecordPage(main) {
   State.petaniCache = await DB.getAll('petani');
   State.typeCache = await DB.getAll('types');
   const records = (await DB.getAll('records')).sort((a, b) => b.id - a.id);
+  const settings = await getAppSettings();
+  const existingTransIds = new Set(records.map((r) => r.transId).filter((v) => v !== undefined && v !== null));
+  const transId = genTransId(existingTransIds);
+  const nowLocal = new Date();
+  const nowLocalValue = `${nowLocal.getFullYear()}-${String(nowLocal.getMonth() + 1).padStart(2, '0')}-${String(nowLocal.getDate()).padStart(2, '0')}T${String(nowLocal.getHours()).padStart(2, '0')}:${String(nowLocal.getMinutes()).padStart(2, '0')}`;
 
   main.innerHTML = `
     <p class="page-eyebrow">Menu 01</p>
@@ -312,8 +366,8 @@ async function renderRecordPage(main) {
       <form id="recordForm">
         <div class="grid-2">
           <div class="field">
-            <label for="rTanggal">Tanggal Record</label>
-            <input type="date" id="rTanggal" value="${todayISO()}" required />
+            <label for="rTanggal">Tanggal &amp; Waktu Kunjungan</label>
+            <input type="datetime-local" id="rTanggal" value="${nowLocalValue}" required />
           </div>
           <div class="field">
             <label for="rType">Type</label>
@@ -332,11 +386,28 @@ async function renderRecordPage(main) {
           ${State.petaniCache.length === 0 ? '<div class="hint-text">Belum ada data petani. Tambahkan dulu di menu Master Petani.</div>' : ''}
         </div>
 
+        <div class="grid-2">
+          <div class="field">
+            <label>Trans ID <span class="hint-inline">(otomatis)</span></label>
+            <input type="text" id="rTransId" value="${esc(transId)}" readonly />
+          </div>
+          <div class="field">
+            <label>Crop Year <span class="hint-inline">(dari Pengaturan)</span></label>
+            <input type="text" id="rCropYear" value="${esc(settings.cropYear)}" readonly />
+          </div>
+        </div>
+        ${!settings.cropYear ? '<div class="hint-text" style="color:var(--danger);margin-top:-8px;margin-bottom:14px;">Crop Year belum diatur. Isi dulu di menu Pengaturan sebelum menyimpan titik lokasi.</div>' : ''}
+
+        <div class="field">
+          <label for="rRemark">Catatan (Remark)</label>
+          <input type="text" id="rRemark" placeholder="Opsional — kosongkan jika tidak ada" />
+        </div>
+
         <div class="gps-box">
           <button type="button" class="btn btn-primary" id="btnGetGps">📍 Ambil Lokasi GPS</button>
           <div class="gps-coords" id="gpsCoords">Belum ada koordinat</div>
           <div id="miniMap"></div>
-          <div class="hint-text">Geser marker pada peta untuk menyesuaikan titik secara manual bila perlu.</div>
+          <div class="hint-text">Geser marker pada peta untuk menyesuaikan titik secara manual bila perlu. Altitude hanya terisi otomatis dari GPS perangkat, bukan dari geser manual.</div>
         </div>
 
         <div class="form-actions">
@@ -350,14 +421,15 @@ async function renderRecordPage(main) {
       <div class="table-wrap">
         ${records.length === 0 ? '<div class="empty-state">Belum ada titik lokasi tercatat.</div>' : `
         <table>
-          <thead><tr><th>Tanggal</th><th>Kode Petani</th><th>Nama Petani</th><th>Type</th><th>Koordinat</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Tanggal</th><th>Kode Petani</th><th>Nama Petani</th><th>Type</th><th>Crop Year</th><th>Koordinat</th><th>Status</th><th></th></tr></thead>
           <tbody>
             ${records.slice(0, 25).map(r => `
               <tr>
-                <td>${esc(r.tanggal)}</td>
+                <td>${esc(fmtDt(r.tanggal))}</td>
                 <td>${esc(r.kodePetani)}</td>
                 <td>${esc(r.namaPetani)}</td>
                 <td><span class="badge ${r.type.toLowerCase() === 'field' ? 'field' : 'warehouse'}">${esc(r.type)}</span></td>
+                <td>${esc(r.cropYear || '-')}</td>
                 <td style="font-family:var(--mono);font-size:0.78rem">${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}</td>
                 <td><span class="badge ${r.syncStatus === 'synced' ? 'synced' : 'pending'}">${r.syncStatus === 'synced' ? 'Tersinkron' : 'Belum sinkron'}</span></td>
                 <td class="table-actions"><button class="btn btn-danger btn-sm" data-del-record="${r.id}">Hapus</button></td>
@@ -376,18 +448,33 @@ async function renderRecordPage(main) {
   document.getElementById('recordForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     if (!State.gps) { toast('Ambil koordinat GPS terlebih dahulu.', 'error'); return; }
+    if (!settings.cropYear) { toast('Crop Year belum diatur di menu Pengaturan.', 'error'); return; }
     const kodePetani = document.getElementById('rPetani').value;
     const petani = State.petaniCache.find(p => p.kodePetani === kodePetani);
+    const remarkVal = document.getElementById('rRemark').value.trim();
+    const visitDate = new Date(document.getElementById('rTanggal').value);
+    const now = new Date();
     const record = {
-      tanggal: document.getElementById('rTanggal').value,
+      transId: Number(document.getElementById('rTransId').value),
+      rowguid: genRowGuid(),
+      tanggal: formatSqlDateTime(visitDate), // maps to T_GPS.Dates
       kodePetani,
-      namaPetani: petani ? petani.namaPetani : '',
-      type: document.getElementById('rType').value,
+      namaPetani: petani ? petani.namaPetani : '', // convenience only, not a T_GPS column
+      type: document.getElementById('rType').value, // maps to T_GPS.status
       lat: State.gps.lat,
       lng: State.gps.lng,
-      kodenikPencatat: State.user.kodenik,
-      syncStatus: 'pending',
-      createdAt: new Date().toISOString(),
+      alt: State.gps.alt ?? null,
+      cropYear: settings.cropYear,
+      source: petani ? petani.source : '',
+      supplierConversion: petani ? petani.petaniConversion : '',
+      remark: remarkVal || '-',
+      userLogin: State.user.kodenik,
+      userModified: 'sync',
+      username: 'sync',
+      dtRecord: formatSqlDateTime(now),
+      dtModified: formatSqlDateTime(now),
+      syncStatus: 'pending', // local-only flag, not a T_GPS column
+      createdAt: now.toISOString(),
     };
     await DB.put('records', record);
     toast('Titik lokasi tersimpan.', 'success');
@@ -415,7 +502,7 @@ function initMiniMap() {
   State.marker = L.marker(defaultCenter, { draggable: true }).addTo(State.map);
   State.marker.on('dragend', () => {
     const pos = State.marker.getLatLng();
-    setGpsValue(pos.lat, pos.lng);
+    setGpsValue(pos.lat, pos.lng, State.gps ? State.gps.alt : null);
   });
   State.gps = null;
 }
@@ -431,8 +518,8 @@ function captureGps() {
 
   navigator.geolocation.getCurrentPosition(
     (pos) => {
-      const { latitude, longitude } = pos.coords;
-      setGpsValue(latitude, longitude);
+      const { latitude, longitude, altitude } = pos.coords;
+      setGpsValue(latitude, longitude, altitude);
       State.map.setView([latitude, longitude], 17);
       State.marker.setLatLng([latitude, longitude]);
       btn.disabled = false;
@@ -447,9 +534,10 @@ function captureGps() {
   );
 }
 
-function setGpsValue(lat, lng) {
-  State.gps = { lat, lng };
-  document.getElementById('gpsCoords').textContent = `Lat: ${lat.toFixed(6)}  ·  Lng: ${lng.toFixed(6)}`;
+function setGpsValue(lat, lng, alt) {
+  State.gps = { lat, lng, alt: (alt === null || alt === undefined || Number.isNaN(alt)) ? null : alt };
+  const altText = State.gps.alt === null ? 'Alt: -' : `Alt: ${State.gps.alt.toFixed(1)} m`;
+  document.getElementById('gpsCoords').textContent = `Lat: ${lat.toFixed(6)}  ·  Lng: ${lng.toFixed(6)}  ·  ${altText}`;
   document.getElementById('btnSaveRecord').disabled = false;
 }
 
@@ -463,7 +551,7 @@ async function renderReportPage(main) {
   const sources = [...new Set(petaniList.map((p) => p.source).filter(Boolean))].sort();
 
   main.innerHTML = `
-    <p class="page-eyebrow">Menu 05</p>
+    <p class="page-eyebrow">Menu 06</p>
     <div class="page-head"><h2>Laporan Titik Petani</h2></div>
 
     <div class="panel">
@@ -544,18 +632,18 @@ async function renderReportPage(main) {
     }
     wrap.innerHTML = `
       <table>
-        <thead><tr><th>Tanggal</th><th>Kode Petani</th><th>Nama Petani</th><th>Source</th><th>Type</th><th>Koordinat</th></tr></thead>
+        <thead><tr><th>Tanggal</th><th>Kode Petani</th><th>Nama Petani</th><th>Type</th><th>Koordinat (Lat, Long, Alt)</th><th>Crop Year</th></tr></thead>
         <tbody>
           ${rows.map(r => {
-            const p = petaniByKode[r.kodePetani];
+            const altText = (r.alt === null || r.alt === undefined) ? '-' : `${Number(r.alt).toFixed(1)} m`;
             return `
               <tr>
-                <td>${esc(r.tanggal)}</td>
+                <td>${esc(fmtDt(r.tanggal))}</td>
                 <td>${esc(r.kodePetani)}</td>
                 <td>${esc(r.namaPetani)}</td>
-                <td>${esc(p ? p.source : '')}</td>
                 <td><span class="badge ${r.type.toLowerCase() === 'field' ? 'field' : 'warehouse'}">${esc(r.type)}</span></td>
-                <td style="font-family:var(--mono);font-size:0.78rem">${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}</td>
+                <td style="font-family:var(--mono);font-size:0.78rem">${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}, ${altText}</td>
+                <td>${esc(r.cropYear || '-')}</td>
               </tr>`;
           }).join('')}
         </tbody>
@@ -574,8 +662,9 @@ async function renderReportPage(main) {
         <strong>${esc(r.kodePetani)} — ${esc(r.namaPetani)}</strong><br/>
         Source: ${esc(p ? p.source : '-')}<br/>
         Type: ${esc(r.type)}<br/>
-        Tanggal: ${esc(r.tanggal)}<br/>
-        ${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}
+        Crop Year: ${esc(r.cropYear || '-')}<br/>
+        Tanggal: ${esc(fmtDt(r.tanggal))}<br/>
+        ${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}, Alt: ${(r.alt === null || r.alt === undefined) ? '-' : Number(r.alt).toFixed(1) + ' m'}
       `);
       latlngs.push([r.lat, r.lng]);
     });
@@ -617,20 +706,32 @@ async function renderReportPage(main) {
     }
     if (!currentRows.length) { toast('Tidak ada data untuk diekspor.', 'error'); return; }
     try {
-      const data = currentRows.map((r) => {
-        const p = petaniByKode[r.kodePetani];
-        return {
-          Tanggal: r.tanggal,
-          'Kode Petani': r.kodePetani,
-          'Nama Petani': r.namaPetani,
-          Source: p ? p.source : '',
-          Type: r.type,
-          Latitude: r.lat,
-          Longitude: r.lng,
-        };
-      });
+      // Column order/names match T_GPS in SQL Server exactly, so this
+      // file can be imported directly (Import Flat File / bcp / SSMS).
+      const data = currentRows.map((r) => ({
+        transID: r.transId ?? '',
+        SupplierID: r.kodePetani,
+        Lat: r.lat,
+        Long: r.lng,
+        Alt: r.alt === null || r.alt === undefined ? '' : r.alt,
+        Dates: r.tanggal,
+        CropYear: r.cropYear || '',
+        Source: r.source || '',
+        dtRecord: r.dtRecord || '',
+        dtModified: r.dtModified || '',
+        UserModified: r.userModified || 'sync',
+        Username: r.username || 'sync',
+        rowguid: r.rowguid || '',
+        Remark: r.remark || '-',
+        status: r.type,
+        userlogin: r.userLogin || '',
+      }));
       const ws = XLSX.utils.json_to_sheet(data);
-      ws['!cols'] = [{ wch: 12 }, { wch: 14 }, { wch: 22 }, { wch: 14 }, { wch: 10 }, { wch: 12 }, { wch: 12 }];
+      ws['!cols'] = [
+        { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 8 }, { wch: 20 },
+        { wch: 10 }, { wch: 10 }, { wch: 20 }, { wch: 20 }, { wch: 12 }, { wch: 10 },
+        { wch: 36 }, { wch: 14 }, { wch: 10 }, { wch: 12 },
+      ];
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Titik Lokasi');
       XLSX.writeFile(wb, `laporan-titik-lokasi-${todayISO()}.xlsx`);
@@ -679,6 +780,8 @@ async function renderReportPage(main) {
 // ---------------------------------------------------------------
 async function renderPetaniPage(main) {
   const rows = await DB.getAll('petani');
+  const settings = await getAppSettings();
+  const defaultSource = State.editingPetani ? '' : settings.source;
   main.innerHTML = `
     <p class="page-eyebrow">Menu 02</p>
     <div class="page-head"><h2>Master Petani</h2></div>
@@ -691,7 +794,11 @@ async function renderPetaniPage(main) {
           <div class="field"><label>Nama Petani</label><input type="text" id="pNama" required /></div>
         </div>
         <div class="grid-2">
-          <div class="field"><label>Source</label><input type="text" id="pSource" /></div>
+          <div class="field">
+            <label>Source</label>
+            <input type="text" id="pSource" value="${esc(defaultSource)}" />
+            ${settings.source ? `<div class="hint-text">Default mengikuti Pengaturan: ${esc(settings.source)}</div>` : ''}
+          </div>
           <div class="field"><label>Petani Conversion</label><input type="text" id="pConversion" /></div>
         </div>
         <div class="field"><label>Kode FT</label><input type="text" id="pKodeFT" /></div>
@@ -954,12 +1061,47 @@ async function renderEmployeePage(main) {
 }
 
 // ---------------------------------------------------------------
-// PAGE: Sinkronisasi Firebase
+// PAGE: Pengaturan (global Source & CropYear)
 // ---------------------------------------------------------------
+async function renderSettingPage(main) {
+  const settings = await getAppSettings();
+  main.innerHTML = `
+    <p class="page-eyebrow">Menu 05</p>
+    <div class="page-head"><h2>Pengaturan</h2></div>
+
+    <div class="panel">
+      <h3>Source &amp; Crop Year Aktif</h3>
+      <p class="hint-text">
+        Nilai di sini menjadi acuan tunggal untuk seluruh aplikasi:
+        <strong>Source</strong> akan mengisi otomatis Master Petani baru, dan
+        <strong>Crop Year</strong> akan otomatis dipakai pada setiap titik
+        lokasi baru yang dicatat — tidak perlu diketik ulang setiap saat.
+      </p>
+      <form id="settingForm">
+        <div class="grid-2">
+          <div class="field"><label>Source</label><input type="text" id="sSource" value="${esc(settings.source)}" placeholder="mis. Local, Import, dst." /></div>
+          <div class="field"><label>Crop Year</label><input type="text" id="sCropYear" value="${esc(settings.cropYear)}" placeholder="mis. 2026" /></div>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">Simpan Pengaturan</button>
+        </div>
+      </form>
+    </div>
+  `;
+
+  document.getElementById('settingForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    await saveAppSettings({
+      source: document.getElementById('sSource').value.trim(),
+      cropYear: document.getElementById('sCropYear').value.trim(),
+    });
+    toast('Pengaturan tersimpan.', 'success');
+  });
+}
 async function renderSyncPage(main) {
   const cfg = (window.Sync && await Sync.getConfig()) || {};
   main.innerHTML = `
-    <p class="page-eyebrow">Menu 06</p>
+    <p class="page-eyebrow">Menu 07</p>
     <div class="page-head"><h2>Sinkronisasi Firebase</h2></div>
 
     <div class="panel">
@@ -1075,7 +1217,7 @@ async function renderSyncPage(main) {
 // ---------------------------------------------------------------
 async function renderBackupPage(main) {
   main.innerHTML = `
-    <p class="page-eyebrow">Menu 07</p>
+    <p class="page-eyebrow">Menu 08</p>
     <div class="page-head"><h2>Backup &amp; Restore</h2></div>
 
     <div class="panel">
@@ -1102,6 +1244,7 @@ async function renderBackupPage(main) {
       types: await DB.getAll('types'),
       employees: await DB.getAll('employees'),
       records: await DB.getAll('records'),
+      settings: await getAppSettings(),
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -1129,6 +1272,7 @@ async function renderBackupPage(main) {
       if (data.types) { await DB.bulkPut('types', data.types); logBox.textContent += `Type: ${data.types.length} baris\n`; }
       if (data.employees) { await DB.bulkPut('employees', data.employees); logBox.textContent += `Employee: ${data.employees.length} baris\n`; }
       if (data.records) { await DB.bulkPut('records', data.records); logBox.textContent += `Records: ${data.records.length} baris\n`; }
+      if (data.settings) { await saveAppSettings(data.settings); logBox.textContent += `Pengaturan Source/Crop Year dipulihkan\n`; }
       logBox.textContent += 'Restore selesai.';
       toast('Restore berhasil.', 'success');
     } catch (err) {
