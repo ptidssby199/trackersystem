@@ -14,21 +14,36 @@ server — cocok di-hosting statis lewat GitHub Pages.
 5. **Catat Lokasi** — form record: tanggal, kode+nama petani, type, dan titik
    GPS yang diambil langsung dari perangkat (`navigator.geolocation`),
    ditampilkan di minimap Leaflet dan bisa digeser manual bila perlu.
-6. **Sinkronisasi Firebase** — push data lokal ke Firestore dan pull data
+6. **Laporan** — daftar & peta semua titik tersimpan, difilter per petani
+   dan per source, dengan marker 🚩 di peta.
+7. **Sinkronisasi Firebase** — push data lokal ke Firestore dan pull data
    dari Firestore, dengan config Firebase disimpan di IndexedDB (tidak
-   di-hardcode di kode sumber).
-7. **Backup / Restore JSON** — ekspor seluruh database ke satu file `.json`,
+   di-hardcode di kode sumber). Config bisa diisi manual atau diimpor
+   langsung dari file JSON.
+8. **Backup / Restore JSON** — ekspor seluruh database ke satu file `.json`,
    dan impor kembali (upsert berdasarkan kunci masing-masing tabel).
+9. **PWA (Progressive Web App)** — bisa "Add to Home Screen" / dipasang
+   sebagai aplikasi di HP maupun desktop, punya app-shell yang tetap bisa
+   dibuka offline (lewat service worker), dan navigasi utama berupa
+   **bottom icon nav** (mirip aplikasi mobile) supaya tinggal tap ikon
+   menu yang dituju.
+10. **Notifikasi custom** — ikon lonceng di pojok kanan atas menyimpan
+    riwayat notifikasi dalam aplikasi (berhasil/gagal), dan bisa
+    mengaktifkan notifikasi asli perangkat (Notification API) yang akan
+    muncul saat aplikasi berjalan di background.
 
 ## Struktur folder
 
 ```
 ids-tracker-system/
-├── index.html          # shell login + layout aplikasi
-├── css/style.css        # tema visual
-├── js/db.js              # wrapper IndexedDB (schema + CRUD)
-├── js/sync.js             # sinkronisasi Firebase Firestore
-├── js/app.js               # routing, halaman, form, GPS & map
+├── index.html            # shell login + layout aplikasi + bottom nav
+├── manifest.json          # metadata PWA (nama, ikon, warna tema)
+├── service-worker.js       # cache app-shell untuk mode offline
+├── icons/                   # ikon PWA (192/512/maskable/apple-touch/favicon)
+├── css/style.css             # tema visual
+├── js/db.js                   # wrapper IndexedDB (schema + CRUD)
+├── js/sync.js                  # sinkronisasi Firebase Firestore
+├── js/app.js                    # routing, halaman, form, GPS, map, notifikasi
 └── README.md
 ```
 
@@ -63,7 +78,8 @@ atau hapus akun admin default sesuai kebutuhan.
 3. Tunggu beberapa menit, aplikasi bisa diakses di
    `https://<username>.github.io/<repo>/`.
 4. Untuk fitur GPS, browser mewajibkan koneksi **HTTPS** — GitHub Pages
-   sudah HTTPS secara default, jadi aman digunakan di lapangan.
+   sudah HTTPS secara default, jadi aman digunakan di lapangan. Service
+   worker (mode offline PWA) juga hanya aktif di HTTPS atau `localhost`.
 
 ## Menghubungkan ke Firebase (opsional)
 
