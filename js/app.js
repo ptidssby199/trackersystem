@@ -145,6 +145,7 @@ async function renderPage() {
     case 'petani': return renderPetaniPage(main);
     case 'type': return renderTypePage(main);
     case 'employee': return renderEmployeePage(main);
+    case 'laporan': return renderReportPage(main);
     case 'sync': return renderSyncPage(main);
     case 'backup': return renderBackupPage(main);
     default: main.innerHTML = '<p>Halaman tidak ditemukan.</p>';
@@ -313,6 +314,136 @@ function setGpsValue(lat, lng) {
   State.gps = { lat, lng };
   document.getElementById('gpsCoords').textContent = `Lat: ${lat.toFixed(6)}  ·  Lng: ${lng.toFixed(6)}`;
   document.getElementById('btnSaveRecord').disabled = false;
+}
+
+// ---------------------------------------------------------------
+// PAGE: Laporan Titik Petani
+// ---------------------------------------------------------------
+async function renderReportPage(main) {
+  const allRecords = (await DB.getAll('records')).sort((a, b) => b.id - a.id);
+  const petaniList = await DB.getAll('petani');
+  const petaniByKode = Object.fromEntries(petaniList.map((p) => [p.kodePetani, p]));
+  const sources = [...new Set(petaniList.map((p) => p.source).filter(Boolean))].sort();
+
+  main.innerHTML = `
+    <p class="page-eyebrow">Menu 05</p>
+    <div class="page-head"><h2>Laporan Titik Petani</h2></div>
+
+    <div class="panel">
+      <h3>Filter</h3>
+      <div class="grid-2">
+        <div class="field">
+          <label for="fPetani">Petani</label>
+          <select id="fPetani">
+            <option value="">Semua Petani</option>
+            ${petaniList.map(p => `<option value="${esc(p.kodePetani)}">${esc(p.kodePetani)} — ${esc(p.namaPetani)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field">
+          <label for="fSource">Source</label>
+          <select id="fSource">
+            <option value="">Semua Source</option>
+            ${sources.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Peta Titik Lokasi</h3>
+      <div id="reportMap" style="height:400px;border-radius:var(--radius);border:1px solid var(--paper-200);"></div>
+    </div>
+
+    <div class="panel">
+      <h3>Daftar Titik (<span id="reportCount">0</span>)</h3>
+      <div class="table-wrap" id="reportTableWrap"></div>
+    </div>
+  `;
+
+  const map = L.map('reportMap').setView([-6.2, 106.816], 5);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors',
+    maxZoom: 19,
+  }).addTo(map);
+  const markerLayer = L.layerGroup().addTo(map);
+
+  const flagIcon = L.divIcon({
+    html: '🚩',
+    className: 'flag-marker',
+    iconSize: [24, 24],
+    iconAnchor: [3, 22],
+    popupAnchor: [4, -20],
+  });
+
+  function renderTable(rows) {
+    document.getElementById('reportCount').textContent = rows.length;
+    const wrap = document.getElementById('reportTableWrap');
+    if (rows.length === 0) {
+      wrap.innerHTML = '<div class="empty-state">Tidak ada titik lokasi yang cocok dengan filter ini.</div>';
+      return;
+    }
+    wrap.innerHTML = `
+      <table>
+        <thead><tr><th>Tanggal</th><th>Kode Petani</th><th>Nama Petani</th><th>Source</th><th>Type</th><th>Koordinat</th></tr></thead>
+        <tbody>
+          ${rows.map(r => {
+            const p = petaniByKode[r.kodePetani];
+            return `
+              <tr>
+                <td>${esc(r.tanggal)}</td>
+                <td>${esc(r.kodePetani)}</td>
+                <td>${esc(r.namaPetani)}</td>
+                <td>${esc(p ? p.source : '')}</td>
+                <td><span class="badge ${r.type.toLowerCase() === 'field' ? 'field' : 'warehouse'}">${esc(r.type)}</span></td>
+                <td style="font-family:var(--mono);font-size:0.78rem">${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}</td>
+              </tr>`;
+          }).join('')}
+        </tbody>
+      </table>`;
+  }
+
+  function renderMap(rows) {
+    markerLayer.clearLayers();
+    if (rows.length === 0) return;
+    const latlngs = [];
+    rows.forEach((r) => {
+      const p = petaniByKode[r.kodePetani];
+      const m = L.marker([r.lat, r.lng], { icon: flagIcon }).addTo(markerLayer);
+      m.bindPopup(`
+        <strong>${esc(r.kodePetani)} — ${esc(r.namaPetani)}</strong><br/>
+        Source: ${esc(p ? p.source : '-')}<br/>
+        Type: ${esc(r.type)}<br/>
+        Tanggal: ${esc(r.tanggal)}<br/>
+        ${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}
+      `);
+      latlngs.push([r.lat, r.lng]);
+    });
+    if (latlngs.length === 1) {
+      map.setView(latlngs[0], 15);
+    } else {
+      map.fitBounds(L.latLngBounds(latlngs), { padding: [30, 30] });
+    }
+  }
+
+  function applyFilters() {
+    const petaniVal = document.getElementById('fPetani').value;
+    const sourceVal = document.getElementById('fSource').value;
+    const filtered = allRecords.filter((r) => {
+      if (petaniVal && r.kodePetani !== petaniVal) return false;
+      if (sourceVal) {
+        const p = petaniByKode[r.kodePetani];
+        if (!p || p.source !== sourceVal) return false;
+      }
+      return true;
+    });
+    renderTable(filtered);
+    renderMap(filtered);
+  }
+
+  document.getElementById('fPetani').addEventListener('change', applyFilters);
+  document.getElementById('fSource').addEventListener('change', applyFilters);
+
+  applyFilters();
 }
 
 // ---------------------------------------------------------------
@@ -600,7 +731,7 @@ async function renderEmployeePage(main) {
 async function renderSyncPage(main) {
   const cfg = (window.Sync && await Sync.getConfig()) || {};
   main.innerHTML = `
-    <p class="page-eyebrow">Menu 05</p>
+    <p class="page-eyebrow">Menu 06</p>
     <div class="page-head"><h2>Sinkronisasi Firebase</h2></div>
 
     <div class="panel">
@@ -716,7 +847,7 @@ async function renderSyncPage(main) {
 // ---------------------------------------------------------------
 async function renderBackupPage(main) {
   main.innerHTML = `
-    <p class="page-eyebrow">Menu 06</p>
+    <p class="page-eyebrow">Menu 07</p>
     <div class="page-head"><h2>Backup &amp; Restore</h2></div>
 
     <div class="panel">
