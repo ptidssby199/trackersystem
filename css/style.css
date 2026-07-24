@@ -487,6 +487,18 @@ tbody tr:hover { background: var(--paper-50); }
   border-radius: var(--radius);
   border: 1px solid var(--paper-200);
   margin-top: 10px;
+  position: relative;
+  isolation: isolate;
+}
+
+/* Any Leaflet map container: force its own stacking context so internal
+   panes (z-index 200-700) never leak out and paint over fixed UI like
+   .bottom-nav (z-index 30). Also clip anything that would otherwise
+   overflow the box. */
+.leaflet-container {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
 }
 
 .flag-marker {
@@ -497,6 +509,27 @@ tbody tr:hover { background: var(--paper-50); }
   text-align: center;
   filter: drop-shadow(0 1px 1px rgba(28,33,22,0.45));
 }
+
+/* Red dot marker: shown when zoomed out so nearby points don't overlap
+   as full-size flags. Smaller footprint = less overlap. */
+.dot-marker {
+  background: transparent;
+  border: none;
+  font-size: 13px;
+  line-height: 1;
+  text-align: center;
+  filter: drop-shadow(0 1px 1px rgba(28,33,22,0.45));
+}
+
+.map-legend {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  font-size: 0.8rem;
+  color: var(--ink-600);
+  margin: 0 0 12px;
+}
+.map-legend span { white-space: nowrap; }
 
 .toolbar {
   display: flex;
