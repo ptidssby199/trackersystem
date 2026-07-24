@@ -2,16 +2,31 @@
  * sync.js — Firebase Firestore sync for IDS Tracker System
  * Loaded as ES module. Firebase SDK is imported dynamically only when
  * the user saves a config, so the app works fully offline without it.
+ *
+ * Firestore is accessed using a dedicated Firebase Authentication
+ * (email/password) account — separate from the app's own "ID Pegawai"
+ * login, which stays local (IndexedDB) and unrelated to Firebase.
  */
 const Sync = (() => {
   let firebaseApp = null;
   let firestoreDb = null;
+  let firebaseAuth = null;
 
   async function loadFirebase(cfg) {
     const { initializeApp } = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js');
     const firestore = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js');
+    const authMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js');
     firebaseApp = initializeApp(cfg);
     firestoreDb = firestore.getFirestore(firebaseApp);
+    firebaseAuth = authMod.getAuth(firebaseApp);
+
+    if (cfg.authEmail && cfg.authPassword) {
+      try {
+        await authMod.signInWithEmailAndPassword(firebaseAuth, cfg.authEmail, cfg.authPassword);
+      } catch (err) {
+        throw new Error(`Login Firebase Authentication gagal (${cfg.authEmail}): ${err.message}`);
+      }
+    }
     return firestore;
   }
 

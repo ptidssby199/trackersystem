@@ -1091,6 +1091,16 @@ async function renderSyncPage(main) {
           <div class="field"><label>messagingSenderId</label><input type="text" id="cfSenderId" value="${esc(cfg.messagingSenderId)}" /></div>
           <div class="field"><label>appId</label><input type="text" id="cfAppId" value="${esc(cfg.appId)}" required /></div>
         </div>
+        <div class="divider"></div>
+        <p class="hint-text">
+          Firestore project ini menggunakan <strong>Firebase Authentication (email/password)</strong>.
+          Isi akun sync khusus (bukan akun ID Pegawai) yang sudah dibuat di tab Authentication
+          Firebase Console — akun ini dipakai app untuk login ke Firebase sebelum push/pull data.
+        </p>
+        <div class="grid-2">
+          <div class="field"><label>Email Firebase Auth</label><input type="email" id="cfAuthEmail" value="${esc(cfg.authEmail)}" placeholder="mis. sync@namaproyek.com" /></div>
+          <div class="field"><label>Password Firebase Auth</label><input type="password" id="cfAuthPassword" value="${esc(cfg.authPassword)}" /></div>
+        </div>
         <div class="form-actions">
           <button type="submit" class="btn btn-primary">Simpan Konfigurasi</button>
         </div>
@@ -1140,6 +1150,8 @@ async function renderSyncPage(main) {
       storageBucket: document.getElementById('cfStorageBucket').value.trim(),
       messagingSenderId: document.getElementById('cfSenderId').value.trim(),
       appId: document.getElementById('cfAppId').value.trim(),
+      authEmail: document.getElementById('cfAuthEmail').value.trim(),
+      authPassword: document.getElementById('cfAuthPassword').value,
     };
     await Sync.saveConfig(cfgObj);
     toast('Konfigurasi Firebase disimpan.', 'success');
