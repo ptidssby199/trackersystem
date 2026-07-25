@@ -16,6 +16,10 @@ const State = {
   editingEmployee: null,
   map: null,
   marker: null,
+  areaPoints: [], // [{ lat, lng, alt }]
+  areaMap: null,
+  areaMarkerLayer: null,
+  areaPolygon: null,
   notifications: [], // { msg, kind, time }
 };
 
@@ -90,7 +94,8 @@ function formatSqlDateTime(d = new Date()) {
 // Generates a unique 10-digit numeric transaction ID (as a string, so
 // leading behaviour is stable and it round-trips cleanly to SQL Server).
 async function generateTransId() {
-  const existing = new Set((await DB.getAll('records')).map((r) => r.transId));
+  const [recs, areas] = await Promise.all([DB.getAll('records'), DB.getAll('areas')]);
+  const existing = new Set([...recs.map((r) => r.transId), ...areas.map((r) => r.transId)]);
   let id;
   do {
     id = String(Math.floor(1000000000 + Math.random() * 9000000000));
@@ -311,6 +316,7 @@ async function renderPage() {
   switch (State.page) {
     case 'dashboard': return renderDashboardPage(main);
     case 'record': return renderRecordPage(main);
+    case 'area': return renderAreaPage(main);
     case 'petani': return renderPetaniPage(main);
     case 'type': return renderTypePage(main);
     case 'employee': return renderEmployeePage(main);
@@ -327,6 +333,7 @@ async function renderPage() {
 // ---------------------------------------------------------------
 const DASHBOARD_CARDS = [
   { page: 'record', label: 'Catat Lokasi', desc: 'Rekam titik GPS baru', icon: '📍' },
+  { page: 'area', label: 'Titik Area', desc: 'Rekam batas area (poligon)', icon: '🗺️' },
   { page: 'petani', label: 'Master Petani', desc: 'Kelola data petani', icon: '🧑\u200d🌾' },
   { page: 'type', label: 'Type', desc: 'Atur kategori, icon & warna', icon: '🗂️' },
   { page: 'employee', label: 'Master Pegawai', desc: 'Kelola akun pegawai', icon: '🪪' },
@@ -654,6 +661,290 @@ function setGpsValue(lat, lng, alt) {
 }
 
 // ---------------------------------------------------------------
+// PAGE: Titik Area (poligon — minimal 3 titik)
+// ---------------------------------------------------------------
+const MIN_AREA_POINTS = 3;
+
+// Shoelace formula on an equirectangular projection centered at the first
+// point. Accurate enough for plantation-block-sized plots (a few km across).
+function computeAreaHectares(points) {
+  if (points.length < 3) return 0;
+  const R = 6378137; // Earth radius (m)
+  const lat0Rad = (points[0].lat * Math.PI) / 180;
+  const toXY = (p) => {
+    const latRad = (p.lat * Math.PI) / 180;
+    const lngRad = (p.lng * Math.PI) / 180;
+    return [R * lngRad * Math.cos(lat0Rad), R * latRad];
+  };
+  const pts = points.map(toXY);
+  let sum = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const [x1, y1] = pts[i];
+    const [x2, y2] = pts[(i + 1) % pts.length];
+    sum += x1 * y2 - x2 * y1;
+  }
+  return Math.abs(sum) / 2 / 10000; // m² -> hectares
+}
+
+function centroidOf(points) {
+  const lat = points.reduce((s, p) => s + p.lat, 0) / points.length;
+  const lng = points.reduce((s, p) => s + p.lng, 0) / points.length;
+  return { lat, lng };
+}
+
+async function renderAreaPage(main) {
+  const petaniList = await DB.getAll('petani');
+  const typeCacheArea = await DB.getAll('types');
+  const areas = (await DB.getAll('areas')).sort((a, b) => b.id - a.id);
+  State.areaPoints = [];
+
+  main.innerHTML = `
+    <p class="page-eyebrow">Menu 02</p>
+    <div class="page-head"><h2>Titik Area (Poligon)</h2></div>
+
+    <div class="panel">
+      <h3>Area Baru</h3>
+      <p class="hint-text">Berjalan mengelilingi batas area, tap "Tambah Titik" di tiap sudut. Minimal ${MIN_AREA_POINTS} titik sebelum bisa disimpan.</p>
+      <form id="areaForm">
+        <div class="grid-2">
+          <div class="field">
+            <label for="aTanggal">Tanggal Record</label>
+            <input type="date" id="aTanggal" value="${todayISO()}" required />
+          </div>
+          <div class="field">
+            <label for="aType">Type</label>
+            <select id="aType" required>
+              <option value="">Pilih type...</option>
+              ${typeCacheArea.map(t => `<option value="${esc(t.name)}">${esc(t.name)}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label for="aPetani">Kode Petani</label>
+          <select id="aPetani" required>
+            <option value="">Pilih petani...</option>
+            ${petaniList.map(p => `<option value="${esc(p.kodePetani)}">${esc(p.kodePetani)} — ${esc(p.namaPetani)}</option>`).join('')}
+          </select>
+        </div>
+
+        <div class="gps-box">
+          <div class="toolbar">
+            <button type="button" class="btn btn-primary" id="btnAddAreaPoint">📍 Tambah Titik</button>
+            <button type="button" class="btn btn-ghost" id="btnUndoAreaPoint">↩ Hapus Titik Terakhir</button>
+            <button type="button" class="btn btn-ghost" id="btnResetAreaPoints">🗑 Reset Semua Titik</button>
+          </div>
+          <div class="gps-coords" id="areaPointStatus">0 titik direkam (minimal ${MIN_AREA_POINTS})</div>
+          <div id="areaMap"></div>
+        </div>
+
+        <div class="table-wrap" id="areaPointsTableWrap"></div>
+
+        <div class="stat-row" style="margin-top:14px;">
+          <div class="stat-card">
+            <div class="num" id="areaLuas">0.00</div>
+            <div class="lbl">Perkiraan Luas (Ha)</div>
+          </div>
+          <div class="stat-card">
+            <div class="num" id="areaPointCountNum">0</div>
+            <div class="lbl">Jumlah Titik</div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="aRemark">Catatan / Remark (opsional)</label>
+          <input type="text" id="aRemark" placeholder="Kosongkan jika tidak ada catatan (default: -)" />
+        </div>
+
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary" id="btnSaveArea" disabled>Simpan Area</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="panel">
+      <h3>Riwayat Area (${areas.length})</h3>
+      <div class="table-wrap">
+        ${areas.length === 0 ? '<div class="empty-state">Belum ada area tercatat.</div>' : `
+        <table>
+          <thead><tr><th>Tanggal</th><th>Kode Petani</th><th>Nama Petani</th><th>Type</th><th>Titik</th><th>Luas (Ha)</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            ${areas.map(a => `
+              <tr>
+                <td>${esc(a.tanggal)}</td>
+                <td>${esc(a.kodePetani)}</td>
+                <td>${esc(a.namaPetani)}</td>
+                <td>${typeBadgeHtml(typeCacheArea, a.type)}</td>
+                <td>${a.points.length}</td>
+                <td style="font-family:var(--mono)">${a.luasHa.toFixed(2)}</td>
+                <td><span class="badge ${a.syncStatus === 'synced' ? 'synced' : 'pending'}">${a.syncStatus === 'synced' ? 'Tersinkron' : 'Belum sinkron'}</span></td>
+                <td class="table-actions"><button class="btn btn-danger btn-sm" data-del-area="${a.id}">Hapus</button></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>`}
+      </div>
+    </div>
+  `;
+
+  initAreaMap();
+  renderAreaPointsTable();
+
+  document.getElementById('btnAddAreaPoint').addEventListener('click', captureAreaPoint);
+  document.getElementById('btnUndoAreaPoint').addEventListener('click', () => {
+    State.areaPoints.pop();
+    redrawAreaPolygon();
+    renderAreaPointsTable();
+  });
+  document.getElementById('btnResetAreaPoints').addEventListener('click', () => {
+    if (State.areaPoints.length > 0 && !confirm('Hapus semua titik yang sudah direkam?')) return;
+    State.areaPoints = [];
+    redrawAreaPolygon();
+    renderAreaPointsTable();
+  });
+
+  document.getElementById('areaForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (State.areaPoints.length < MIN_AREA_POINTS) {
+      toast(`Minimal ${MIN_AREA_POINTS} titik sebelum area bisa disimpan.`, 'error');
+      return;
+    }
+    const kodePetani = document.getElementById('aPetani').value;
+    const petani = petaniList.find((p) => p.kodePetani === kodePetani);
+    const settings = await getAppSettings();
+    const remarkInput = document.getElementById('aRemark').value.trim();
+    const luasHa = computeAreaHectares(State.areaPoints);
+    const centroid = centroidOf(State.areaPoints);
+
+    const areaRecord = {
+      transId: await generateTransId(),
+      tanggal: document.getElementById('aTanggal').value,
+      kodePetani,
+      namaPetani: petani ? petani.namaPetani : '',
+      type: document.getElementById('aType').value,
+      points: State.areaPoints.map((p) => ({ lat: p.lat, lng: p.lng, altitude: p.alt ?? null })),
+      centroidLat: centroid.lat,
+      centroidLng: centroid.lng,
+      luasHa,
+      cropYear: settings.cropYear,
+      supplier: (petani && petani.source) || settings.source || '',
+      conversion: (petani && petani.petaniConversion) || '-',
+      remark: remarkInput || '-',
+      userModified: 'sync',
+      username: 'sync',
+      userLogin: State.user.kodenik,
+      syncStatus: 'pending',
+      createdAt: formatSqlDateTime(new Date()),
+    };
+    await DB.put('areas', areaRecord);
+    toast(`Area tersimpan (${State.areaPoints.length} titik, ${luasHa.toFixed(2)} Ha).`, 'success');
+    renderAreaPage(main);
+  });
+
+  main.querySelectorAll('[data-del-area]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Hapus area ini?')) return;
+      await DB.remove('areas', Number(btn.dataset.delArea));
+      toast('Area dihapus.');
+      renderAreaPage(main);
+    });
+  });
+}
+
+function initAreaMap() {
+  const defaultCenter = [-6.2, 106.816];
+  State.areaMap = L.map('areaMap').setView(defaultCenter, 5);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors',
+    maxZoom: 19,
+  }).addTo(State.areaMap);
+  State.areaMarkerLayer = L.layerGroup().addTo(State.areaMap);
+  State.areaPolygon = L.polygon([], { color: '#a8501e', weight: 2, fillOpacity: 0.15 }).addTo(State.areaMap);
+}
+
+function redrawAreaPolygon() {
+  const latlngs = State.areaPoints.map((p) => [p.lat, p.lng]);
+  State.areaPolygon.setLatLngs(latlngs);
+  State.areaMarkerLayer.clearLayers();
+  State.areaPoints.forEach((p, i) => {
+    L.marker([p.lat, p.lng], {
+      icon: L.divIcon({
+        html: `<span class="area-point-marker">${i + 1}</span>`,
+        className: '',
+        iconSize: [22, 22],
+        iconAnchor: [11, 11],
+      }),
+    }).addTo(State.areaMarkerLayer);
+  });
+  if (latlngs.length > 0) {
+    State.areaMap.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40], maxZoom: 18 });
+  }
+  const luas = computeAreaHectares(State.areaPoints);
+  document.getElementById('areaLuas').textContent = luas.toFixed(2);
+  document.getElementById('areaPointCountNum').textContent = State.areaPoints.length;
+  document.getElementById('areaPointStatus').textContent =
+    `${State.areaPoints.length} titik direkam (minimal ${MIN_AREA_POINTS})`;
+  document.getElementById('btnSaveArea').disabled = State.areaPoints.length < MIN_AREA_POINTS;
+}
+
+function renderAreaPointsTable() {
+  const wrap = document.getElementById('areaPointsTableWrap');
+  if (State.areaPoints.length === 0) {
+    wrap.innerHTML = '<div class="empty-state">Belum ada titik. Tap "Tambah Titik" untuk mulai merekam batas area.</div>';
+    return;
+  }
+  wrap.innerHTML = `
+    <table>
+      <thead><tr><th>#</th><th>Lat</th><th>Long</th><th>Alt</th><th></th></tr></thead>
+      <tbody>
+        ${State.areaPoints.map((p, i) => `
+          <tr>
+            <td>${i + 1}</td>
+            <td style="font-family:var(--mono);font-size:0.78rem">${p.lat.toFixed(6)}</td>
+            <td style="font-family:var(--mono);font-size:0.78rem">${p.lng.toFixed(6)}</td>
+            <td style="font-family:var(--mono);font-size:0.78rem">${p.alt != null ? p.alt.toFixed(1) : '-'}</td>
+            <td class="table-actions"><button type="button" class="btn btn-danger btn-sm" data-del-area-point="${i}">Hapus</button></td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>`;
+
+  wrap.querySelectorAll('[data-del-area-point]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      State.areaPoints.splice(Number(btn.dataset.delAreaPoint), 1);
+      redrawAreaPolygon();
+      renderAreaPointsTable();
+    });
+  });
+}
+
+function captureAreaPoint() {
+  if (!navigator.geolocation) {
+    toast('Perangkat ini tidak mendukung GPS.', 'error');
+    return;
+  }
+  const btn = document.getElementById('btnAddAreaPoint');
+  btn.disabled = true;
+  btn.textContent = 'Mencari sinyal GPS…';
+
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const { latitude, longitude, altitude } = pos.coords;
+      State.areaPoints.push({ lat: latitude, lng: longitude, alt: altitude ?? null });
+      redrawAreaPolygon();
+      renderAreaPointsTable();
+      btn.disabled = false;
+      btn.textContent = '📍 Tambah Titik';
+    },
+    (err) => {
+      toast('Gagal mengambil lokasi: ' + err.message, 'error');
+      btn.disabled = false;
+      btn.textContent = '📍 Tambah Titik';
+    },
+    { enableHighAccuracy: true, timeout: 15000 }
+  );
+}
+
+// ---------------------------------------------------------------
 // PAGE: Laporan Titik Petani
 // ---------------------------------------------------------------
 async function renderReportPage(main) {
@@ -664,7 +955,7 @@ async function renderReportPage(main) {
   const typeCache = await DB.getAll('types');
 
   main.innerHTML = `
-    <p class="page-eyebrow">Menu 05</p>
+    <p class="page-eyebrow">Menu 06</p>
     <div class="page-head"><h2>Laporan Titik Petani</h2></div>
 
     <div class="panel">
@@ -901,7 +1192,7 @@ async function renderReportPage(main) {
 async function renderSettingsPage(main) {
   const settings = await getAppSettings();
   main.innerHTML = `
-    <p class="page-eyebrow">Menu 06</p>
+    <p class="page-eyebrow">Menu 07</p>
     <div class="page-head"><h2>Pengaturan</h2></div>
 
     <div class="panel">
@@ -958,7 +1249,7 @@ async function renderPetaniPage(main) {
   const rows = await DB.getAll('petani');
   const settings = await getAppSettings();
   main.innerHTML = `
-    <p class="page-eyebrow">Menu 02</p>
+    <p class="page-eyebrow">Menu 03</p>
     <div class="page-head"><h2>Master Petani</h2></div>
 
     <div class="panel">
@@ -1078,7 +1369,7 @@ function typeBadgeHtml(typeCache, typeName) {
 async function renderTypePage(main) {
   const rows = await DB.getAll('types');
   main.innerHTML = `
-    <p class="page-eyebrow">Menu 03</p>
+    <p class="page-eyebrow">Menu 04</p>
     <div class="page-head"><h2>Type</h2></div>
 
     <div class="panel">
@@ -1208,7 +1499,7 @@ async function renderTypePage(main) {
 async function renderEmployeePage(main) {
   const rows = await DB.getAll('employees');
   main.innerHTML = `
-    <p class="page-eyebrow">Menu 04</p>
+    <p class="page-eyebrow">Menu 05</p>
     <div class="page-head"><h2>Master Employee</h2></div>
 
     <div class="panel">
@@ -1308,7 +1599,7 @@ async function renderEmployeePage(main) {
 async function renderSyncPage(main) {
   const cfg = (window.Sync && await Sync.getConfig()) || {};
   main.innerHTML = `
-    <p class="page-eyebrow">Menu 07</p>
+    <p class="page-eyebrow">Menu 08</p>
     <div class="page-head"><h2>Sinkronisasi Firebase</h2></div>
 
     <div class="panel">
@@ -1436,7 +1727,7 @@ async function renderSyncPage(main) {
 // ---------------------------------------------------------------
 async function renderBackupPage(main) {
   main.innerHTML = `
-    <p class="page-eyebrow">Menu 08</p>
+    <p class="page-eyebrow">Menu 09</p>
     <div class="page-head"><h2>Backup &amp; Restore</h2></div>
 
     <div class="panel">
@@ -1463,6 +1754,7 @@ async function renderBackupPage(main) {
       types: await DB.getAll('types'),
       employees: await DB.getAll('employees'),
       records: await DB.getAll('records'),
+      areas: await DB.getAll('areas'),
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -1490,6 +1782,7 @@ async function renderBackupPage(main) {
       if (data.types) { await DB.bulkPut('types', data.types); logBox.textContent += `Type: ${data.types.length} baris\n`; }
       if (data.employees) { await DB.bulkPut('employees', data.employees); logBox.textContent += `Employee: ${data.employees.length} baris\n`; }
       if (data.records) { await DB.bulkPut('records', data.records); logBox.textContent += `Records: ${data.records.length} baris\n`; }
+      if (data.areas) { await DB.bulkPut('areas', data.areas); logBox.textContent += `Area: ${data.areas.length} baris\n`; }
       logBox.textContent += 'Restore selesai.';
       toast('Restore berhasil.', 'success');
     } catch (err) {

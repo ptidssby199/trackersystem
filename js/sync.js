@@ -54,6 +54,7 @@ const Sync = (() => {
       { name: 'employees', keyField: 'kodenik' },
       { name: 'types', keyField: 'id' },
       { name: 'records', keyField: 'id' },
+      { name: 'areas', keyField: 'id' },
     ];
 
     for (const s of stores) {
@@ -73,7 +74,7 @@ const Sync = (() => {
     const firestore = await loadFirebase(cfgRow);
     const { collection, getDocs } = firestore;
 
-    const stores = ['petani', 'employees', 'types', 'records'];
+    const stores = ['petani', 'employees', 'types', 'records', 'areas'];
     for (const name of stores) {
       const snap = await getDocs(collection(firestoreDb, name));
       const rows = [];

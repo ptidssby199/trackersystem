@@ -1,9 +1,9 @@
 /**
  * db.js — IndexedDB layer for IDS Tracker System
- * Stores: employees, petani, types, records, config
+ * Stores: employees, petani, types, records, areas, config
  */
 const DB_NAME = 'idsTrackerDB';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 const DB = (() => {
   let db = null;
@@ -31,6 +31,12 @@ const DB = (() => {
           r.createIndex('kodePetani', 'kodePetani', { unique: false });
           r.createIndex('tanggal', 'tanggal', { unique: false });
           r.createIndex('syncStatus', 'syncStatus', { unique: false });
+        }
+        if (!_db.objectStoreNames.contains('areas')) {
+          const a = _db.createObjectStore('areas', { keyPath: 'id', autoIncrement: true });
+          a.createIndex('kodePetani', 'kodePetani', { unique: false });
+          a.createIndex('tanggal', 'tanggal', { unique: false });
+          a.createIndex('syncStatus', 'syncStatus', { unique: false });
         }
         if (!_db.objectStoreNames.contains('config')) {
           _db.createObjectStore('config', { keyPath: 'key' });
