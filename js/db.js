@@ -122,8 +122,8 @@ const DB = (() => {
     }
     const types = await getAll('types');
     if (types.length === 0) {
-      await put('types', { id: 1, name: 'Field' });
-      await put('types', { id: 2, name: 'Warehouse' });
+      await put('types', { id: 1, name: 'Field', icon: '🚩', color: '#c96a2e' });
+      await put('types', { id: 2, name: 'Warehouse', icon: '🏭', color: '#3c5a3e' });
     }
   }
 

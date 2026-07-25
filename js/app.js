@@ -328,7 +328,7 @@ async function renderPage() {
 const DASHBOARD_CARDS = [
   { page: 'record', label: 'Catat Lokasi', desc: 'Rekam titik GPS baru', icon: '📍' },
   { page: 'petani', label: 'Master Petani', desc: 'Kelola data petani', icon: '🧑\u200d🌾' },
-  { page: 'type', label: 'Type', desc: 'Kategori Field / Warehouse', icon: '🗂️' },
+  { page: 'type', label: 'Type', desc: 'Atur kategori, icon & warna', icon: '🗂️' },
   { page: 'employee', label: 'Master Pegawai', desc: 'Kelola akun pegawai', icon: '🪪' },
   { page: 'laporan', label: 'Laporan', desc: 'Peta & export data', icon: '🗺️' },
   { page: 'settings', label: 'Setting', desc: 'Source & Crop Year global', icon: '⚙️' },
@@ -341,7 +341,7 @@ function dayLabel(d) {
 }
 
 async function renderDashboardPage(main) {
-  const [petaniList, records] = await Promise.all([DB.getAll('petani'), DB.getAll('records')]);
+  const [petaniList, records, typeCache] = await Promise.all([DB.getAll('petani'), DB.getAll('records'), DB.getAll('types')]);
   const settings = await getAppSettings();
 
   const totalPetani = petaniList.length;
@@ -431,7 +431,7 @@ async function renderDashboardPage(main) {
                 <td>${esc(r.tanggal)}</td>
                 <td>${esc(r.kodePetani)}</td>
                 <td>${esc(r.namaPetani)}</td>
-                <td><span class="badge ${r.type.toLowerCase() === 'field' ? 'field' : 'warehouse'}">${esc(r.type)}</span></td>
+                <td>${typeBadgeHtml(typeCache, r.type)}</td>
                 <td><span class="badge ${r.syncStatus === 'synced' ? 'synced' : 'pending'}">${r.syncStatus === 'synced' ? 'Tersinkron' : 'Belum sinkron'}</span></td>
               </tr>
             `).join('')}
@@ -526,7 +526,7 @@ async function renderRecordPage(main) {
                 <td>${esc(r.tanggal)}</td>
                 <td>${esc(r.kodePetani)}</td>
                 <td>${esc(r.namaPetani)}</td>
-                <td><span class="badge ${r.type.toLowerCase() === 'field' ? 'field' : 'warehouse'}">${esc(r.type)}</span></td>
+                <td>${typeBadgeHtml(State.typeCache, r.type)}</td>
                 <td style="font-family:var(--mono);font-size:0.78rem">${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}, ${r.altitude != null ? r.altitude.toFixed(1) : '-'}</td>
                 <td>${esc(r.cropYear ?? '-')}</td>
                 <td><span class="badge ${r.syncStatus === 'synced' ? 'synced' : 'pending'}">${r.syncStatus === 'synced' ? 'Tersinkron' : 'Belum sinkron'}</span></td>
@@ -586,14 +586,15 @@ async function renderRecordPage(main) {
 }
 
 function recordMarkerIcon() {
-  const typeVal = (document.getElementById('rType')?.value || '').toLowerCase();
-  const isWarehouse = typeVal && typeVal !== 'field';
+  const typeVal = document.getElementById('rType')?.value || '';
+  const t = State.typeCache.find((x) => x.name === typeVal);
+  const { icon, color } = typeMeta(t);
   return L.divIcon({
-    html: isWarehouse ? '🏭' : '🚩',
+    html: `<span class="marker-pin" style="background:${color}">${icon}</span>`,
     className: 'flag-marker',
-    iconSize: [26, 26],
-    iconAnchor: isWarehouse ? [13, 24] : [4, 24],
-    popupAnchor: [0, -22],
+    iconSize: [30, 30],
+    iconAnchor: [15, 28],
+    popupAnchor: [0, -26],
   });
 }
 
@@ -660,6 +661,7 @@ async function renderReportPage(main) {
   const petaniList = await DB.getAll('petani');
   const petaniByKode = Object.fromEntries(petaniList.map((p) => [p.kodePetani, p]));
   const sources = [...new Set(petaniList.map((p) => p.source).filter(Boolean))].sort();
+  const typeCache = await DB.getAll('types');
 
   main.innerHTML = `
     <p class="page-eyebrow">Menu 05</p>
@@ -688,8 +690,11 @@ async function renderReportPage(main) {
     <div class="panel">
       <h3>Peta Titik Lokasi</h3>
       <p class="map-legend">
-        <span>🚩 Field &nbsp;·&nbsp; 🏭 Warehouse <em>(saat peta di-zoom dekat)</em></span>
-        <span>🔴 Field &nbsp;·&nbsp; 🟠 Warehouse <em>(saat peta di-zoom jauh, supaya tidak tumpang tindih)</em></span>
+        ${typeCache.map((t) => {
+          const { icon, color } = typeMeta(t);
+          return `<span><span class="legend-swatch" style="background:${color}"></span>${icon} ${esc(t.name)}</span>`;
+        }).join('')}
+        <span class="hint-text">Icon besar saat zoom dekat &middot; titik kecil warna sama saat zoom jauh (atur icon/warna di menu Type)</span>
       </p>
       <div id="reportMap" style="height:400px;border-radius:var(--radius);border:1px solid var(--paper-200);"></div>
       <div class="toolbar" style="margin-top:12px;">
@@ -714,45 +719,36 @@ async function renderReportPage(main) {
   }).addTo(map);
   const markerLayer = L.layerGroup().addTo(map);
 
-  const ZOOM_FLAG_THRESHOLD = 14; // >= this zoom: show flags. Below it: show small dots.
+  const ZOOM_FLAG_THRESHOLD = 14; // >= this zoom: show the full icon. Below it: show a small colored dot.
 
-  const flagIconField = L.divIcon({
-    html: '🚩',
-    className: 'flag-marker',
-    iconSize: [24, 24],
-    iconAnchor: [3, 22],
-    popupAnchor: [4, -20],
-  });
-
-  const flagIconWarehouse = L.divIcon({
-    html: '🏭',
-    className: 'flag-marker',
-    iconSize: [24, 24],
-    iconAnchor: [12, 22],
-    popupAnchor: [0, -20],
-  });
-
-  const dotIconField = L.divIcon({
-    html: '🔴',
-    className: 'dot-marker',
-    iconSize: [14, 14],
-    iconAnchor: [7, 7],
-    popupAnchor: [0, -8],
-  });
-
-  const dotIconWarehouse = L.divIcon({
-    html: '🟠',
-    className: 'dot-marker',
-    iconSize: [14, 14],
-    iconAnchor: [7, 7],
-    popupAnchor: [0, -8],
-  });
+  const iconCacheByType = new Map(); // type name -> { flag: L.divIcon, dot: L.divIcon }
+  function iconsForType(typeName) {
+    if (!iconCacheByType.has(typeName)) {
+      const t = typeCache.find((x) => x.name === typeName);
+      const { icon, color } = typeMeta(t);
+      iconCacheByType.set(typeName, {
+        flag: L.divIcon({
+          html: `<span class="marker-pin" style="background:${color}">${icon}</span>`,
+          className: 'flag-marker',
+          iconSize: [30, 30],
+          iconAnchor: [15, 28],
+          popupAnchor: [0, -26],
+        }),
+        dot: L.divIcon({
+          html: `<span class="marker-dot" style="background:${color}"></span>`,
+          className: 'dot-marker',
+          iconSize: [14, 14],
+          iconAnchor: [7, 7],
+          popupAnchor: [0, -8],
+        }),
+      });
+    }
+    return iconCacheByType.get(typeName);
+  }
 
   function iconFor(r) {
-    const isWarehouse = (r.type || '').toLowerCase() !== 'field';
-    const zoomedIn = map.getZoom() >= ZOOM_FLAG_THRESHOLD;
-    if (zoomedIn) return isWarehouse ? flagIconWarehouse : flagIconField;
-    return isWarehouse ? dotIconWarehouse : dotIconField;
+    const icons = iconsForType(r.type);
+    return map.getZoom() >= ZOOM_FLAG_THRESHOLD ? icons.flag : icons.dot;
   }
 
   let currentRows = [];
@@ -773,7 +769,7 @@ async function renderReportPage(main) {
                 <td>${esc(r.tanggal)}</td>
                 <td>${esc(r.kodePetani)}</td>
                 <td>${esc(r.namaPetani)}</td>
-                <td><span class="badge ${r.type.toLowerCase() === 'field' ? 'field' : 'warehouse'}">${esc(r.type)}</span></td>
+                <td>${typeBadgeHtml(typeCache, r.type)}</td>
                 <td style="font-family:var(--mono);font-size:0.78rem">${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}, ${r.altitude != null ? r.altitude.toFixed(1) : '-'}</td>
                 <td>${esc(r.cropYear ?? '-')}</td>
               </tr>`).join('')}
@@ -1054,6 +1050,21 @@ async function renderPetaniPage(main) {
 // ---------------------------------------------------------------
 // PAGE: Type
 // ---------------------------------------------------------------
+const TYPE_ICON_CHOICES = ['🚩', '🏭', '📍', '🏬', '🏠', '📦', '🌾', '🌴', '🚜', '⛽', '🏗️', '🔧', '⚠️', '✅', '🛰️', '🧭'];
+
+function typeMeta(t) {
+  return {
+    icon: (t && t.icon) || '📍',
+    color: (t && t.color) || '#c96a2e',
+  };
+}
+
+function typeBadgeHtml(typeCache, typeName) {
+  const t = typeCache.find((x) => x.name === typeName);
+  const { icon, color } = typeMeta(t);
+  return `<span class="badge" style="background:${color}20;color:${color};border:1px solid ${color}55;">${icon} ${esc(typeName)}</span>`;
+}
+
 async function renderTypePage(main) {
   const rows = await DB.getAll('types');
   main.innerHTML = `
@@ -1064,6 +1075,24 @@ async function renderTypePage(main) {
       <h3 id="typeFormTitle">Tambah Type</h3>
       <form id="typeForm">
         <div class="field"><label>Nama Type</label><input type="text" id="tName" placeholder="mis. Field / Warehouse" required /></div>
+        <div class="grid-2">
+          <div class="field">
+            <label>Icon</label>
+            <div class="icon-picker" id="iconPicker">
+              ${TYPE_ICON_CHOICES.map((ic) => `<button type="button" class="icon-choice" data-icon="${ic}">${ic}</button>`).join('')}
+            </div>
+            <input type="text" id="tIconCustom" placeholder="Atau ketik/paste emoji lain di sini" style="margin-top:8px;" />
+          </div>
+          <div class="field">
+            <label>Warna Penanda</label>
+            <input type="color" id="tColor" value="#c96a2e" />
+            <div class="hint-text">Warna ini dipakai di peta — baik saat zoom dekat (di belakang icon) maupun zoom jauh (titik kecil).</div>
+          </div>
+        </div>
+        <div class="field">
+          <label>Preview</label>
+          <div id="tPreview"></div>
+        </div>
         <div class="form-actions">
           <button type="submit" class="btn btn-primary">Simpan</button>
           <button type="button" class="btn btn-ghost hidden" id="tCancelEdit">Batal Edit</button>
@@ -1080,7 +1109,7 @@ async function renderTypePage(main) {
           <tbody>
             ${rows.map(t => `
               <tr>
-                <td><span class="badge ${t.name.toLowerCase() === 'field' ? 'field' : 'warehouse'}">${esc(t.name)}</span></td>
+                <td>${typeBadgeHtml(rows, t.name)}</td>
                 <td class="table-actions">
                   <button class="btn btn-ghost btn-sm" data-edit-type="${t.id}">Edit</button>
                   <button class="btn btn-danger btn-sm" data-del-type="${t.id}">Hapus</button>
@@ -1095,11 +1124,42 @@ async function renderTypePage(main) {
 
   const form = document.getElementById('typeForm');
   const cancelBtn = document.getElementById('tCancelEdit');
+  const iconCustomInput = document.getElementById('tIconCustom');
+  const colorInput = document.getElementById('tColor');
+  let selectedIcon = TYPE_ICON_CHOICES[0];
+
+  function updatePreview() {
+    const name = document.getElementById('tName').value.trim() || 'Nama Type';
+    const color = colorInput.value;
+    document.getElementById('tPreview').innerHTML =
+      `<span class="badge" style="background:${color}20;color:${color};border:1px solid ${color}55;">${selectedIcon} ${esc(name)}</span>`;
+  }
+
+  function setSelectedIcon(icon) {
+    selectedIcon = icon;
+    iconCustomInput.value = '';
+    main.querySelectorAll('.icon-choice').forEach((b) => b.classList.toggle('active', b.dataset.icon === icon));
+    updatePreview();
+  }
+
+  main.querySelectorAll('.icon-choice').forEach((btn) => {
+    btn.addEventListener('click', () => setSelectedIcon(btn.dataset.icon));
+  });
+  iconCustomInput.addEventListener('input', () => {
+    if (iconCustomInput.value.trim()) {
+      selectedIcon = iconCustomInput.value.trim();
+      main.querySelectorAll('.icon-choice').forEach((b) => b.classList.remove('active'));
+      updatePreview();
+    }
+  });
+  colorInput.addEventListener('input', updatePreview);
+  document.getElementById('tName').addEventListener('input', updatePreview);
+  setSelectedIcon(selectedIcon);
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const name = document.getElementById('tName').value.trim();
-    const payload = { name };
+    const payload = { name, icon: selectedIcon, color: colorInput.value };
     if (State.editingType) payload.id = State.editingType;
     await DB.put('types', payload);
     toast('Type tersimpan.', 'success');
@@ -1115,7 +1175,10 @@ async function renderTypePage(main) {
       State.editingType = t.id;
       document.getElementById('typeFormTitle').textContent = `Edit Type — ${t.name}`;
       document.getElementById('tName').value = t.name;
+      colorInput.value = t.color || '#c96a2e';
+      setSelectedIcon(t.icon || TYPE_ICON_CHOICES[0]);
       cancelBtn.classList.remove('hidden');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     });
   });
 
