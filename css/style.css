@@ -511,35 +511,74 @@ tbody tr:hover { background: var(--paper-50); }
   overflow: hidden;
 }
 
-.flag-marker {
+.flag-marker, .dot-marker {
   background: transparent;
   border: none;
-  font-size: 22px;
-  line-height: 1;
-  text-align: center;
-  filter: drop-shadow(0 1px 1px rgba(28,33,22,0.45));
 }
 
-/* Red dot marker: shown when zoomed out so nearby points don't overlap
-   as full-size flags. Smaller footprint = less overlap. */
-.dot-marker {
-  background: transparent;
-  border: none;
-  font-size: 13px;
+/* Colored marker "chip": user-picked icon on a user-picked color background,
+   so the Type's color is visible whether zoomed in (icon) or zoomed out (dot). */
+.marker-pin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  font-size: 16px;
   line-height: 1;
-  text-align: center;
-  filter: drop-shadow(0 1px 1px rgba(28,33,22,0.45));
+  border: 2px solid #fff;
+  box-shadow: 0 2px 5px rgba(28,33,22,0.45);
+}
+
+.marker-dot {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(28,33,22,0.45);
 }
 
 .map-legend {
   display: flex;
   gap: 18px;
   flex-wrap: wrap;
+  align-items: center;
   font-size: 0.8rem;
   color: var(--ink-600);
   margin: 0 0 12px;
 }
-.map-legend span { white-space: nowrap; }
+.map-legend span { white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; }
+.legend-swatch {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1px solid rgba(0,0,0,0.15);
+}
+
+/* ---------- Type page: icon picker ---------- */
+.icon-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.icon-choice {
+  width: 42px;
+  height: 42px;
+  font-size: 1.2rem;
+  border: 1px solid var(--paper-200);
+  background: #fff;
+  border-radius: var(--radius-sm);
+  transition: border-color 0.15s var(--ease), background-color 0.15s var(--ease);
+}
+.icon-choice:hover { background: var(--paper-50); }
+.icon-choice.active {
+  border-color: var(--way-500);
+  background: #fdf1e7;
+  box-shadow: 0 0 0 2px rgba(201,106,46,0.25) inset;
+}
 
 .toolbar {
   display: flex;
