@@ -7,7 +7,7 @@
 // ---------------------------------------------------------------
 const State = {
   user: null,
-  page: 'record',
+  page: 'dashboard',
   petaniCache: [],
   typeCache: [],
   gps: null, // { lat, lng }
@@ -224,6 +224,7 @@ function bindLogin() {
     }
     State.user = { kodenik: emp.kodenik, nama: emp.nama, posisi: emp.posisi };
     sessionStorage.setItem('idsTrackerUser', JSON.stringify(State.user));
+    State.page = 'dashboard';
     showApp();
   });
 }
@@ -238,12 +239,7 @@ function bindShell() {
   });
 
   document.querySelectorAll('.bn-item').forEach((item) => {
-    item.addEventListener('click', () => {
-      document.querySelectorAll('.bn-item').forEach((n) => n.classList.remove('active'));
-      item.classList.add('active');
-      State.page = item.dataset.page;
-      renderPage();
-    });
+    item.addEventListener('click', () => goToPage(item.dataset.page));
   });
 
   // Notification bell panel
@@ -292,10 +288,18 @@ function bindShell() {
   });
 }
 
+function goToPage(page) {
+  State.page = page;
+  document.querySelectorAll('.bn-item').forEach((n) => n.classList.toggle('active', n.dataset.page === page));
+  renderPage();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
 function showApp() {
   document.getElementById('loginScreen').classList.add('hidden');
   document.getElementById('appShell').classList.remove('hidden');
   document.getElementById('userLabel').textContent = `${State.user.nama} · ${State.user.kodenik}`;
+  document.querySelectorAll('.bn-item').forEach((n) => n.classList.toggle('active', n.dataset.page === State.page));
   renderPage();
 }
 
@@ -305,6 +309,7 @@ function showApp() {
 async function renderPage() {
   const main = document.getElementById('mainContent');
   switch (State.page) {
+    case 'dashboard': return renderDashboardPage(main);
     case 'record': return renderRecordPage(main);
     case 'petani': return renderPetaniPage(main);
     case 'type': return renderTypePage(main);
@@ -315,6 +320,137 @@ async function renderPage() {
     case 'backup': return renderBackupPage(main);
     default: main.innerHTML = '<p>Halaman tidak ditemukan.</p>';
   }
+}
+
+// ---------------------------------------------------------------
+// PAGE: Dashboard (landing page after login)
+// ---------------------------------------------------------------
+const DASHBOARD_CARDS = [
+  { page: 'record', label: 'Catat Lokasi', desc: 'Rekam titik GPS baru', icon: '📍' },
+  { page: 'petani', label: 'Master Petani', desc: 'Kelola data petani', icon: '🧑\u200d🌾' },
+  { page: 'type', label: 'Type', desc: 'Kategori Field / Warehouse', icon: '🗂️' },
+  { page: 'employee', label: 'Master Pegawai', desc: 'Kelola akun pegawai', icon: '🪪' },
+  { page: 'laporan', label: 'Laporan', desc: 'Peta & export data', icon: '🗺️' },
+  { page: 'settings', label: 'Setting', desc: 'Source & Crop Year global', icon: '⚙️' },
+  { page: 'sync', label: 'Sinkronisasi', desc: 'Push/pull Firebase', icon: '🔄' },
+  { page: 'backup', label: 'Backup', desc: 'Export/import JSON', icon: '💾' },
+];
+
+function dayLabel(d) {
+  return ['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'][d.getDay()];
+}
+
+async function renderDashboardPage(main) {
+  const [petaniList, records] = await Promise.all([DB.getAll('petani'), DB.getAll('records')]);
+  const settings = await getAppSettings();
+
+  const totalPetani = petaniList.length;
+  const totalRecords = records.length;
+  const belumSync = records.filter((r) => r.syncStatus !== 'synced').length;
+  const fieldCount = records.filter((r) => (r.type || '').toLowerCase() === 'field').length;
+  const warehouseCount = totalRecords - fieldCount;
+
+  // Last 7 days activity (for the sparkline bars)
+  const days = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const iso = d.toISOString().slice(0, 10);
+    const count = records.filter((r) => r.tanggal === iso).length;
+    days.push({ label: dayLabel(d), iso, count });
+  }
+  const maxCount = Math.max(1, ...days.map((d) => d.count));
+
+  const recent = [...records]
+    .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+    .slice(0, 6);
+
+  const todayStr = new Date().toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+
+  main.innerHTML = `
+    <p class="page-eyebrow">Ringkasan</p>
+    <div class="page-head">
+      <h2>Halo, ${esc(State.user.nama.split(' ')[0])} 👋</h2>
+      <span class="hint-text">${esc(todayStr)}</span>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat-card">
+        <div class="num">${totalPetani}</div>
+        <div class="lbl">Petani Terdaftar</div>
+      </div>
+      <div class="stat-card">
+        <div class="num">${totalRecords}</div>
+        <div class="lbl">Total Titik Lokasi</div>
+      </div>
+      <div class="stat-card ${belumSync > 0 ? 'stat-warn' : ''}">
+        <div class="num">${belumSync}</div>
+        <div class="lbl">Belum Sinkron</div>
+      </div>
+      <div class="stat-card">
+        <div class="num">${fieldCount} <span class="hint-text" style="font-size:0.9rem;">/ ${warehouseCount}</span></div>
+        <div class="lbl">Field / Warehouse</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Aktivitas 7 Hari Terakhir</h3>
+      <div class="sparkline">
+        ${days.map((d) => `
+          <div class="spark-col">
+            <div class="spark-bar" style="height:${Math.max(6, Math.round((d.count / maxCount) * 64))}px" title="${d.count} titik"></div>
+            <div class="spark-count">${d.count}</div>
+            <div class="spark-label">${esc(d.label)}</div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Akses Cepat</h3>
+      <div class="quick-grid">
+        ${DASHBOARD_CARDS.map((c) => `
+          <button class="quick-card" data-goto="${c.page}">
+            <span class="quick-icon">${c.icon}</span>
+            <span class="quick-label">${esc(c.label)}</span>
+            <span class="quick-desc">${esc(c.desc)}</span>
+          </button>
+        `).join('')}
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Titik Lokasi Terbaru</h3>
+      ${recent.length === 0 ? '<div class="empty-state">Belum ada titik lokasi tercatat.</div>' : `
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Tanggal</th><th>Kode Petani</th><th>Nama Petani</th><th>Type</th><th>Status</th></tr></thead>
+          <tbody>
+            ${recent.map((r) => `
+              <tr>
+                <td>${esc(r.tanggal)}</td>
+                <td>${esc(r.kodePetani)}</td>
+                <td>${esc(r.namaPetani)}</td>
+                <td><span class="badge ${r.type.toLowerCase() === 'field' ? 'field' : 'warehouse'}">${esc(r.type)}</span></td>
+                <td><span class="badge ${r.syncStatus === 'synced' ? 'synced' : 'pending'}">${r.syncStatus === 'synced' ? 'Tersinkron' : 'Belum sinkron'}</span></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>`}
+    </div>
+
+    ${!settings.source ? `
+    <div class="panel panel-notice">
+      <h3>⚠️ Setting belum lengkap</h3>
+      <p class="hint-text">Source global belum diatur. Buka menu Setting supaya Petani baru & Titik Lokasi baru otomatis terisi dengan benar.</p>
+      <button class="btn btn-primary btn-sm" data-goto="settings">Buka Setting</button>
+    </div>` : ''}
+  `;
+
+  main.querySelectorAll('[data-goto]').forEach((el) => {
+    el.addEventListener('click', () => goToPage(el.dataset.goto));
+  });
 }
 
 // ---------------------------------------------------------------
