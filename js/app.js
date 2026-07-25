@@ -588,13 +588,13 @@ async function renderRecordPage(main) {
 function recordMarkerIcon() {
   const typeVal = document.getElementById('rType')?.value || '';
   const t = State.typeCache.find((x) => x.name === typeVal);
-  const { icon, color } = typeMeta(t);
+  const { icon } = typeMeta(t);
   return L.divIcon({
-    html: `<span class="marker-pin" style="background:${color}">${icon}</span>`,
+    html: `<span class="marker-pin">${icon}</span>`,
     className: 'flag-marker',
-    iconSize: [30, 30],
-    iconAnchor: [15, 28],
-    popupAnchor: [0, -26],
+    iconSize: [26, 26],
+    iconAnchor: [13, 24],
+    popupAnchor: [0, -22],
   });
 }
 
@@ -689,13 +689,7 @@ async function renderReportPage(main) {
 
     <div class="panel">
       <h3>Peta Titik Lokasi</h3>
-      <p class="map-legend">
-        ${typeCache.map((t) => {
-          const { icon, color } = typeMeta(t);
-          return `<span><span class="legend-swatch" style="background:${color}"></span>${icon} ${esc(t.name)}</span>`;
-        }).join('')}
-        <span class="hint-text">Icon besar saat zoom dekat &middot; titik kecil warna sama saat zoom jauh (atur icon/warna di menu Type)</span>
-      </p>
+      <p class="hint-text">Icon besar saat zoom dekat &middot; titik kecil berwarna saat zoom jauh. Legenda warna tampil langsung di peta (atur icon/warna di menu Type).</p>
       <div id="reportMap" style="height:400px;border-radius:var(--radius);border:1px solid var(--paper-200);"></div>
       <div class="toolbar" style="margin-top:12px;">
         <button class="btn btn-ghost" id="btnExportMapJpeg">🖼 Export Peta (JPEG)</button>
@@ -719,6 +713,22 @@ async function renderReportPage(main) {
   }).addTo(map);
   const markerLayer = L.layerGroup().addTo(map);
 
+  // On-map legend control — lives inside the Leaflet container itself, so it
+  // shows on screen AND gets captured automatically by the JPEG export.
+  const LegendControl = L.Control.extend({
+    options: { position: 'bottomleft' },
+    onAdd: function () {
+      const div = L.DomUtil.create('div', 'map-legend-control');
+      div.innerHTML = typeCache.map((t) => {
+        const { icon, color } = typeMeta(t);
+        return `<div class="legend-row"><span class="legend-swatch" style="background:${color}"></span>${icon} ${esc(t.name)}</div>`;
+      }).join('');
+      L.DomEvent.disableClickPropagation(div);
+      return div;
+    },
+  });
+  map.addControl(new LegendControl());
+
   const ZOOM_FLAG_THRESHOLD = 14; // >= this zoom: show the full icon. Below it: show a small colored dot.
 
   const iconCacheByType = new Map(); // type name -> { flag: L.divIcon, dot: L.divIcon }
@@ -728,11 +738,11 @@ async function renderReportPage(main) {
       const { icon, color } = typeMeta(t);
       iconCacheByType.set(typeName, {
         flag: L.divIcon({
-          html: `<span class="marker-pin" style="background:${color}">${icon}</span>`,
+          html: `<span class="marker-pin">${icon}</span>`,
           className: 'flag-marker',
-          iconSize: [30, 30],
-          iconAnchor: [15, 28],
-          popupAnchor: [0, -26],
+          iconSize: [26, 26],
+          iconAnchor: [13, 24],
+          popupAnchor: [0, -22],
         }),
         dot: L.divIcon({
           html: `<span class="marker-dot" style="background:${color}"></span>`,
