@@ -93,6 +93,41 @@ function formatSqlDateTime(d = new Date()) {
 
 // Generates a unique 10-digit numeric transaction ID (as a string, so
 // leading behaviour is stable and it round-trips cleanly to SQL Server).
+// Looks up ground elevation from a topographic (SRTM) dataset instead of
+// relying on the phone's raw GPS altitude reading, which is often off by
+// 10-30m. Falls back silently (returns null) if offline or the service is
+// unreachable — callers should fall back to the device's GPS altitude.
+async function fetchTopoElevation(lat, lng) {
+  const withTimeout = (p, ms) => Promise.race([
+    p,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms)),
+  ]);
+
+  try {
+    const res = await withTimeout(
+      fetch(`https://api.opentopodata.org/v1/srtm30m?locations=${lat},${lng}`), 6000
+    );
+    if (res.ok) {
+      const data = await res.json();
+      const elev = data?.results?.[0]?.elevation;
+      if (typeof elev === 'number') return { value: elev, source: 'topografi SRTM 30m' };
+    }
+  } catch (_) { /* try backup provider below */ }
+
+  try {
+    const res = await withTimeout(
+      fetch(`https://api.open-elevation.com/api/v1/lookup?locations=${lat},${lng}`), 6000
+    );
+    if (res.ok) {
+      const data = await res.json();
+      const elev = data?.results?.[0]?.elevation;
+      if (typeof elev === 'number') return { value: elev, source: 'topografi (Open-Elevation)' };
+    }
+  } catch (_) { /* give up — caller falls back to raw GPS altitude */ }
+
+  return null;
+}
+
 async function generateTransId() {
   const [recs, areas] = await Promise.all([DB.getAll('records'), DB.getAll('areas')]);
   const existing = new Set([...recs.map((r) => r.transId), ...areas.map((r) => r.transId)]);
@@ -507,7 +542,7 @@ async function renderRecordPage(main) {
           <button type="button" class="btn btn-primary" id="btnGetGps">📍 Ambil Lokasi GPS</button>
           <div class="gps-coords" id="gpsCoords">Belum ada koordinat</div>
           <div id="miniMap"></div>
-          <div class="hint-text">Geser marker pada peta untuk menyesuaikan titik secara manual bila perlu.</div>
+          <div class="hint-text">Geser marker pada peta untuk menyesuaikan titik secara manual bila perlu. Altitude diambil dari data topografi (lebih akurat dari GPS ponsel) — butuh koneksi internet, otomatis fallback ke GPS kalau offline.</div>
         </div>
 
         <div class="field">
@@ -614,10 +649,13 @@ function initMiniMap() {
   }).addTo(State.map);
 
   State.marker = L.marker(defaultCenter, { draggable: true, icon: recordMarkerIcon() }).addTo(State.map);
-  State.marker.on('dragend', () => {
+  State.marker.on('dragend', async () => {
     const pos = State.marker.getLatLng();
-    // Manual drag only repositions lat/lng; keep whatever altitude GPS last reported.
-    setGpsValue(pos.lat, pos.lng, State.gps ? State.gps.alt : null);
+    // Show the new position immediately with the old altitude, then refresh
+    // it from the topo dataset since elevation changes with location.
+    setGpsValue(pos.lat, pos.lng, State.gps ? State.gps.alt : null, State.gps ? State.gps.altSource : null);
+    const topo = await fetchTopoElevation(pos.lat, pos.lng);
+    if (topo) setGpsValue(pos.lat, pos.lng, topo.value, topo.source);
   });
   document.getElementById('rType').addEventListener('change', () => {
     State.marker.setIcon(recordMarkerIcon());
@@ -635,11 +673,16 @@ function captureGps() {
   btn.textContent = 'Mencari sinyal GPS…';
 
   navigator.geolocation.getCurrentPosition(
-    (pos) => {
+    async (pos) => {
       const { latitude, longitude, altitude } = pos.coords;
-      setGpsValue(latitude, longitude, altitude);
       State.map.setView([latitude, longitude], 17);
       State.marker.setLatLng([latitude, longitude]);
+      setGpsValue(latitude, longitude, altitude, altitude != null ? 'GPS perangkat' : null);
+
+      btn.textContent = 'Mengambil data topografi…';
+      const topo = await fetchTopoElevation(latitude, longitude);
+      if (topo) setGpsValue(latitude, longitude, topo.value, topo.source);
+
       btn.disabled = false;
       btn.textContent = '📍 Ambil Lokasi GPS';
     },
@@ -652,9 +695,11 @@ function captureGps() {
   );
 }
 
-function setGpsValue(lat, lng, alt) {
-  State.gps = { lat, lng, alt: (alt === null || alt === undefined) ? null : alt };
-  const altText = State.gps.alt === null ? '- (tidak tersedia)' : `${State.gps.alt.toFixed(1)} m`;
+function setGpsValue(lat, lng, alt, altSource) {
+  State.gps = { lat, lng, alt: (alt === null || alt === undefined) ? null : alt, altSource: altSource || null };
+  const altText = State.gps.alt === null
+    ? '- (tidak tersedia)'
+    : `${State.gps.alt.toFixed(1)} m${altSource ? ` · ${altSource}` : ''}`;
   document.getElementById('gpsCoords').textContent =
     `Lat: ${lat.toFixed(6)}  ·  Lng: ${lng.toFixed(6)}  ·  Alt: ${altText}`;
   document.getElementById('btnSaveRecord').disabled = false;
@@ -704,7 +749,7 @@ async function renderAreaPage(main) {
 
     <div class="panel">
       <h3>Area Baru</h3>
-      <p class="hint-text">Berjalan mengelilingi batas area, tap "Tambah Titik" di tiap sudut. Minimal ${MIN_AREA_POINTS} titik sebelum bisa disimpan.</p>
+      <p class="hint-text">Berjalan mengelilingi batas area, tap "Tambah Titik" di tiap sudut. Minimal ${MIN_AREA_POINTS} titik sebelum bisa disimpan. Altitude tiap titik diambil dari data topografi (butuh internet, fallback ke GPS kalau offline).</p>
       <form id="areaForm">
         <div class="grid-2">
           <div class="field">
@@ -927,11 +972,21 @@ function captureAreaPoint() {
   btn.textContent = 'Mencari sinyal GPS…';
 
   navigator.geolocation.getCurrentPosition(
-    (pos) => {
+    async (pos) => {
       const { latitude, longitude, altitude } = pos.coords;
-      State.areaPoints.push({ lat: latitude, lng: longitude, alt: altitude ?? null });
+      const point = { lat: latitude, lng: longitude, alt: altitude ?? null };
+      State.areaPoints.push(point);
       redrawAreaPolygon();
       renderAreaPointsTable();
+
+      btn.textContent = 'Mengambil data topografi…';
+      const topo = await fetchTopoElevation(latitude, longitude);
+      if (topo) {
+        point.alt = topo.value;
+        redrawAreaPolygon();
+        renderAreaPointsTable();
+      }
+
       btn.disabled = false;
       btn.textContent = '📍 Tambah Titik';
     },
@@ -949,6 +1004,7 @@ function captureAreaPoint() {
 // ---------------------------------------------------------------
 async function renderReportPage(main) {
   const allRecords = (await DB.getAll('records')).sort((a, b) => b.id - a.id);
+  const allAreas = (await DB.getAll('areas')).sort((a, b) => b.id - a.id);
   const petaniList = await DB.getAll('petani');
   const petaniByKode = Object.fromEntries(petaniList.map((p) => [p.kodePetani, p]));
   const sources = [...new Set(petaniList.map((p) => p.source).filter(Boolean))].sort();
@@ -979,8 +1035,8 @@ async function renderReportPage(main) {
     </div>
 
     <div class="panel">
-      <h3>Peta Titik Lokasi</h3>
-      <p class="hint-text">Icon besar saat zoom dekat &middot; titik kecil berwarna saat zoom jauh. Legenda warna tampil langsung di peta (atur icon/warna di menu Type).</p>
+      <h3>Peta Titik Lokasi &amp; Area</h3>
+      <p class="hint-text">Icon besar saat zoom dekat &middot; titik kecil berwarna saat zoom jauh &middot; area ditampilkan sebagai poligon berwarna. Legenda tampil langsung di peta (atur icon/warna di menu Type).</p>
       <div id="reportMap" style="height:400px;border-radius:var(--radius);border:1px solid var(--paper-200);"></div>
       <div class="toolbar" style="margin-top:12px;">
         <button class="btn btn-ghost" id="btnExportMapJpeg">🖼 Export Peta (JPEG)</button>
@@ -994,6 +1050,11 @@ async function renderReportPage(main) {
       </div>
       <div class="table-wrap" id="reportTableWrap"></div>
     </div>
+
+    <div class="panel">
+      <h3>Daftar Area (<span id="reportAreaCount">0</span>)</h3>
+      <div class="table-wrap" id="reportAreaTableWrap"></div>
+    </div>
   `;
 
   const map = L.map('reportMap').setView([-6.2, 106.816], 5);
@@ -1003,6 +1064,7 @@ async function renderReportPage(main) {
     crossOrigin: true,
   }).addTo(map);
   const markerLayer = L.layerGroup().addTo(map);
+  const areaLayer = L.layerGroup().addTo(map);
 
   // On-map legend control — lives inside the Leaflet container itself, so it
   // shows on screen AND gets captured automatically by the JPEG export.
@@ -1053,6 +1115,7 @@ async function renderReportPage(main) {
   }
 
   let currentRows = [];
+  let currentAreas = [];
 
   function renderTable(rows) {
     document.getElementById('reportCount').textContent = rows.length;
@@ -1078,47 +1141,97 @@ async function renderReportPage(main) {
       </table>`;
   }
 
-  function renderMap(rows, opts = {}) {
+  function renderAreaTable(areas) {
+    document.getElementById('reportAreaCount').textContent = areas.length;
+    const wrap = document.getElementById('reportAreaTableWrap');
+    if (areas.length === 0) {
+      wrap.innerHTML = '<div class="empty-state">Tidak ada area yang cocok dengan filter ini.</div>';
+      return;
+    }
+    wrap.innerHTML = `
+      <table>
+        <thead><tr><th>Tanggal</th><th>Kode Petani</th><th>Nama Petani</th><th>Type</th><th>Jumlah Titik</th><th>Luas (Ha)</th><th>Crop Year</th></tr></thead>
+        <tbody>
+          ${areas.map(a => `
+              <tr>
+                <td>${esc(a.tanggal)}</td>
+                <td>${esc(a.kodePetani)}</td>
+                <td>${esc(a.namaPetani)}</td>
+                <td>${typeBadgeHtml(typeCache, a.type)}</td>
+                <td>${a.points.length}</td>
+                <td style="font-family:var(--mono)">${a.luasHa.toFixed(2)}</td>
+                <td>${esc(a.cropYear ?? '-')}</td>
+              </tr>`).join('')}
+        </tbody>
+      </table>`;
+  }
+
+  function renderMap(rows, areas, opts = {}) {
     markerLayer.clearLayers();
-    if (rows.length === 0) return;
+    areaLayer.clearLayers();
     const latlngs = [];
-    rows.forEach((r) => {
-      const m = L.marker([r.lat, r.lng], { icon: iconFor(r) }).addTo(markerLayer);
-      m.bindPopup(`
-        <strong>${esc(r.kodePetani)} — ${esc(r.namaPetani)}</strong><br/>
-        Type: ${esc(r.type)}<br/>
-        Tanggal: ${esc(r.tanggal)}<br/>
-        Crop Year: ${esc(r.cropYear ?? '-')}<br/>
-        ${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}, ${r.altitude != null ? r.altitude.toFixed(1) : '-'}
-      `);
-      latlngs.push([r.lat, r.lng]);
-    });
+
+    if (rows.length > 0) {
+      rows.forEach((r) => {
+        const m = L.marker([r.lat, r.lng], { icon: iconFor(r) }).addTo(markerLayer);
+        m.bindPopup(`
+          <strong>${esc(r.kodePetani)} — ${esc(r.namaPetani)}</strong><br/>
+          Type: ${esc(r.type)}<br/>
+          Tanggal: ${esc(r.tanggal)}<br/>
+          Crop Year: ${esc(r.cropYear ?? '-')}<br/>
+          ${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}, ${r.altitude != null ? r.altitude.toFixed(1) : '-'}
+        `);
+        latlngs.push([r.lat, r.lng]);
+      });
+    }
+
+    if (areas.length > 0) {
+      areas.forEach((a) => {
+        const t = typeCache.find((x) => x.name === a.type);
+        const { color } = typeMeta(t);
+        const ring = a.points.map((p) => [p.lat, p.lng]);
+        const poly = L.polygon(ring, { color, weight: 2, fillColor: color, fillOpacity: 0.25 }).addTo(areaLayer);
+        poly.bindPopup(`
+          <strong>${esc(a.kodePetani)} — ${esc(a.namaPetani)}</strong><br/>
+          Type: ${esc(a.type)}<br/>
+          Tanggal: ${esc(a.tanggal)}<br/>
+          Luas: ${a.luasHa.toFixed(2)} Ha (${a.points.length} titik)<br/>
+          Crop Year: ${esc(a.cropYear ?? '-')}
+        `);
+        ring.forEach((ll) => latlngs.push(ll));
+      });
+    }
+
     if (opts.keepView) return;
     if (latlngs.length === 1) {
       map.setView(latlngs[0], 15);
-    } else {
+    } else if (latlngs.length > 1) {
       map.fitBounds(L.latLngBounds(latlngs), { padding: [30, 30] });
     }
   }
 
   // Re-pick flag vs red-dot icon whenever the zoom level changes,
   // without re-fitting the view (that would fight the user's zoom/pan).
-  map.on('zoomend', () => renderMap(currentRows, { keepView: true }));
+  map.on('zoomend', () => renderMap(currentRows, currentAreas, { keepView: true }));
 
   function applyFilters() {
     const petaniVal = document.getElementById('fPetani').value;
     const sourceVal = document.getElementById('fSource').value;
-    const filtered = allRecords.filter((r) => {
-      if (petaniVal && r.kodePetani !== petaniVal) return false;
+    const matchesFilter = (kodePetani) => {
+      if (petaniVal && kodePetani !== petaniVal) return false;
       if (sourceVal) {
-        const p = petaniByKode[r.kodePetani];
+        const p = petaniByKode[kodePetani];
         if (!p || p.source !== sourceVal) return false;
       }
       return true;
-    });
+    };
+    const filtered = allRecords.filter((r) => matchesFilter(r.kodePetani));
+    const filteredAreas = allAreas.filter((a) => matchesFilter(a.kodePetani));
     currentRows = filtered;
+    currentAreas = filteredAreas;
     renderTable(filtered);
-    renderMap(filtered);
+    renderAreaTable(filteredAreas);
+    renderMap(filtered, filteredAreas);
   }
 
   document.getElementById('fPetani').addEventListener('change', applyFilters);
@@ -1129,22 +1242,43 @@ async function renderReportPage(main) {
       toast('Library Excel gagal dimuat (cek koneksi internet), coba muat ulang halaman.', 'error');
       return;
     }
-    if (!currentRows.length) { toast('Tidak ada data untuk diekspor.', 'error'); return; }
+    if (!currentRows.length && !currentAreas.length) { toast('Tidak ada data untuk diekspor.', 'error'); return; }
     try {
-      const data = currentRows.map((r) => ({
-        Tanggal: r.tanggal,
-        'Kode Petani': r.kodePetani,
-        'Nama Petani': r.namaPetani,
-        Type: r.type,
-        Latitude: r.lat,
-        Longitude: r.lng,
-        Altitude: r.altitude != null ? r.altitude : '',
-        'Crop Year': r.cropYear ?? '',
-      }));
-      const ws = XLSX.utils.json_to_sheet(data);
-      ws['!cols'] = [{ wch: 12 }, { wch: 14 }, { wch: 22 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 10 }];
       const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'Titik Lokasi');
+
+      if (currentRows.length) {
+        const data = currentRows.map((r) => ({
+          Tanggal: r.tanggal,
+          'Kode Petani': r.kodePetani,
+          'Nama Petani': r.namaPetani,
+          Type: r.type,
+          Latitude: r.lat,
+          Longitude: r.lng,
+          Altitude: r.altitude != null ? r.altitude : '',
+          'Crop Year': r.cropYear ?? '',
+        }));
+        const ws = XLSX.utils.json_to_sheet(data);
+        ws['!cols'] = [{ wch: 12 }, { wch: 14 }, { wch: 22 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 10 }];
+        XLSX.utils.book_append_sheet(wb, ws, 'Titik Lokasi');
+      }
+
+      if (currentAreas.length) {
+        const areaData = currentAreas.map((a) => ({
+          Tanggal: a.tanggal,
+          'Kode Petani': a.kodePetani,
+          'Nama Petani': a.namaPetani,
+          Type: a.type,
+          'Jumlah Titik': a.points.length,
+          'Luas (Ha)': Number(a.luasHa.toFixed(4)),
+          'Centroid Lat': a.centroidLat,
+          'Centroid Long': a.centroidLng,
+          'Crop Year': a.cropYear ?? '',
+        }));
+        const wsArea = XLSX.utils.json_to_sheet(areaData);
+        wsArea['!cols'] = [{ wch: 12 }, { wch: 14 }, { wch: 22 }, { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 10 }];
+        XLSX.utils.book_append_sheet(wb, wsArea, 'Titik Area');
+      }
+
       XLSX.writeFile(wb, `laporan-titik-lokasi-${todayISO()}.xlsx`);
       toast('Excel diunduh.', 'success');
     } catch (err) {
@@ -1157,7 +1291,7 @@ async function renderReportPage(main) {
       toast('Library gambar peta gagal dimuat (cek koneksi internet), coba muat ulang halaman.', 'error');
       return;
     }
-    if (!currentRows.length) { toast('Tidak ada titik pada peta untuk diekspor.', 'error'); return; }
+    if (!currentRows.length && !currentAreas.length) { toast('Tidak ada data pada peta untuk diekspor.', 'error'); return; }
     const btn = document.getElementById('btnExportMapJpeg');
     btn.disabled = true;
     try {
