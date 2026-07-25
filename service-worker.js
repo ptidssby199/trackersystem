@@ -3,7 +3,7 @@
  * Data lives in IndexedDB (handled by db.js), so this worker only
  * needs to make the app itself installable and load offline.
  */
-const CACHE_NAME = 'ids-tracker-shell-v9';
+const CACHE_NAME = 'ids-tracker-shell-v10';
 
 const APP_SHELL = [
   './',
