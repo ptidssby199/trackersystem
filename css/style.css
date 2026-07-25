@@ -516,19 +516,15 @@ tbody tr:hover { background: var(--paper-50); }
   border: none;
 }
 
-/* Colored marker "chip": user-picked icon on a user-picked color background,
-   so the Type's color is visible whether zoomed in (icon) or zoomed out (dot). */
+/* Zoomed-in tier: plain icon only, no color background (color still used
+   for the zoomed-out dot tier below, and in the on-map legend). */
 .marker-pin {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  font-size: 16px;
+  font-size: 22px;
   line-height: 1;
-  border: 2px solid #fff;
-  box-shadow: 0 2px 5px rgba(28,33,22,0.45);
+  filter: drop-shadow(0 1px 2px rgba(28,33,22,0.55));
 }
 
 .marker-dot {
@@ -540,22 +536,26 @@ tbody tr:hover { background: var(--paper-50); }
   box-shadow: 0 1px 4px rgba(28,33,22,0.45);
 }
 
-.map-legend {
-  display: flex;
-  gap: 18px;
-  flex-wrap: wrap;
-  align-items: center;
-  font-size: 0.8rem;
-  color: var(--ink-600);
-  margin: 0 0 12px;
+/* On-map legend control (Leaflet control, bottom-left) — shows on screen
+   and is captured automatically when the map is exported to JPEG. */
+.map-legend-control {
+  background: rgba(255,255,255,0.94);
+  border: 1px solid var(--paper-200);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  box-shadow: var(--elevation-1);
+  font-size: 0.78rem;
+  color: var(--ink-900);
 }
-.map-legend span { white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; }
+.legend-row { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.legend-row + .legend-row { margin-top: 3px; }
 .legend-swatch {
   display: inline-block;
   width: 11px;
   height: 11px;
   border-radius: 50%;
   border: 1px solid rgba(0,0,0,0.15);
+  flex-shrink: 0;
 }
 
 /* ---------- Type page: icon picker ---------- */
