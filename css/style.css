@@ -180,6 +180,21 @@ button {
   color: var(--ink-600);
   line-height: 1.5;
 }
+.login-version {
+  margin-top: 10px;
+  font-size: 0.68rem;
+  color: var(--ink-600);
+  opacity: 0.6;
+  font-family: var(--mono);
+  text-align: center;
+}
+.app-version {
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  opacity: 0.6;
+  font-weight: 400;
+  margin-left: 2px;
+}
 
 /* ---------- App shell ---------- */
 #appShell { min-height: 100vh; }
