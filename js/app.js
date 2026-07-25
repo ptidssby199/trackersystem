@@ -103,17 +103,20 @@ async function fetchTopoElevation(lat, lng) {
     new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms)),
   ]);
 
+  // Open-Meteo Elevation API (Copernicus DEM) — confirmed CORS-enabled for
+  // direct browser use, no API key needed.
   try {
     const res = await withTimeout(
-      fetch(`https://api.opentopodata.org/v1/srtm30m?locations=${lat},${lng}`), 6000
+      fetch(`https://api.open-meteo.com/v1/elevation?latitude=${lat}&longitude=${lng}`), 6000
     );
     if (res.ok) {
       const data = await res.json();
-      const elev = data?.results?.[0]?.elevation;
-      if (typeof elev === 'number') return { value: elev, source: 'topografi SRTM 30m' };
+      const elev = data?.elevation?.[0];
+      if (typeof elev === 'number') return { value: elev, source: 'topografi (Open-Meteo / Copernicus DEM)' };
     }
   } catch (_) { /* try backup provider below */ }
 
+  // Open-Elevation (SRTM) — also CORS-enabled, used as a fallback.
   try {
     const res = await withTimeout(
       fetch(`https://api.open-elevation.com/api/v1/lookup?locations=${lat},${lng}`), 6000
@@ -121,7 +124,7 @@ async function fetchTopoElevation(lat, lng) {
     if (res.ok) {
       const data = await res.json();
       const elev = data?.results?.[0]?.elevation;
-      if (typeof elev === 'number') return { value: elev, source: 'topografi (Open-Elevation)' };
+      if (typeof elev === 'number') return { value: elev, source: 'topografi (Open-Elevation SRTM)' };
     }
   } catch (_) { /* give up — caller falls back to raw GPS altitude */ }
 
@@ -188,7 +191,16 @@ function parseFirebaseConfigText(text) {
 // ---------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------
+// App/cache version shown in the header, so it's easy to confirm whether a
+// device has actually picked up the latest deployed build (vs. a stale
+// cached copy served by the service worker).
+const APP_VERSION = 'v13';
+
 window.addEventListener('DOMContentLoaded', async () => {
+  document.querySelectorAll('#appVersionLabel, #loginVersionLabel').forEach((el) => {
+    el.textContent = el.id === 'loginVersionLabel' ? `Versi ${APP_VERSION}` : APP_VERSION;
+  });
+
   await DB.open();
   await DB.seedIfEmpty();
   bindLogin();
@@ -643,6 +655,10 @@ function recordMarkerIcon() {
 function initMiniMap() {
   const defaultCenter = [-6.2, 106.816]; // Jakarta fallback
   State.map = L.map('miniMap').setView(defaultCenter, 5);
+  // Leaflet can mis-measure its container if layout shifts after init
+  // (e.g. webfonts loading); recompute size once the layout has settled so
+  // drag/click coordinates stay accurate.
+  setTimeout(() => State.map.invalidateSize(), 200);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; OpenStreetMap contributors',
     maxZoom: 19,
@@ -898,6 +914,7 @@ async function renderAreaPage(main) {
 function initAreaMap() {
   const defaultCenter = [-6.2, 106.816];
   State.areaMap = L.map('areaMap').setView(defaultCenter, 5);
+  setTimeout(() => State.areaMap.invalidateSize(), 200);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; OpenStreetMap contributors',
     maxZoom: 19,
@@ -1058,6 +1075,7 @@ async function renderReportPage(main) {
   `;
 
   const map = L.map('reportMap').setView([-6.2, 106.816], 5);
+  setTimeout(() => map.invalidateSize(), 200);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; OpenStreetMap contributors',
     maxZoom: 19,
