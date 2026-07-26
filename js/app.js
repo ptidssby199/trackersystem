@@ -194,7 +194,7 @@ function parseFirebaseConfigText(text) {
 // App/cache version shown in the header, so it's easy to confirm whether a
 // device has actually picked up the latest deployed build (vs. a stale
 // cached copy served by the service worker).
-const APP_VERSION = 'v13';
+const APP_VERSION = 'v14';
 
 window.addEventListener('DOMContentLoaded', async () => {
   document.querySelectorAll('#appVersionLabel, #loginVersionLabel').forEach((el) => {
@@ -1428,6 +1428,28 @@ async function renderPetaniPage(main) {
     </div>
 
     <div class="panel">
+      <h3>Import dari File (CSV / JSON)</h3>
+      <p class="hint-text">
+        Kolom yang dibutuhkan: <code>kodePetani</code>, <code>namaPetani</code> (wajib),
+        <code>petaniConversion</code>, <code>kodeFT</code> (opsional). Source tidak perlu ada di
+        file — otomatis ikut Pengaturan global. Kalau kodePetani sudah ada, datanya akan ditimpa (update).
+      </p>
+      <div class="toolbar">
+        <button type="button" class="btn btn-ghost" id="btnTemplateCsv">⬇ Template CSV</button>
+        <button type="button" class="btn btn-ghost" id="btnTemplateJson">⬇ Template JSON</button>
+      </div>
+      <div class="field">
+        <label for="petaniImportFile">Pilih File (.csv atau .json)</label>
+        <input type="file" id="petaniImportFile" accept=".csv,.json,text/csv,application/json" />
+      </div>
+      <div id="petaniImportPreviewWrap"></div>
+      <div class="form-actions hidden" id="petaniImportActions">
+        <button type="button" class="btn btn-primary" id="btnConfirmImport">Import <span id="petaniImportValidCount">0</span> Data</button>
+        <button type="button" class="btn btn-ghost" id="btnCancelImport">Batal</button>
+      </div>
+    </div>
+
+    <div class="panel">
       <h3>Daftar Petani (${rows.length})</h3>
       <div class="table-wrap">
         ${rows.length === 0 ? '<div class="empty-state">Belum ada data petani.</div>' : `
@@ -1497,6 +1519,163 @@ async function renderPetaniPage(main) {
       toast('Petani dihapus.');
       renderPetaniPage(main);
     });
+  });
+
+  // ---------------- Import dari CSV/JSON ----------------
+  const TEMPLATE_ROWS = [
+    { kodePetani: 'PT001', namaPetani: 'Contoh Nama Petani', petaniConversion: 'A', kodeFT: 'FT001' },
+    { kodePetani: 'PT002', namaPetani: 'Nama Petani Lain', petaniConversion: 'B', kodeFT: 'FT002' },
+  ];
+
+  function downloadTextFile(filename, content, mime) {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  document.getElementById('btnTemplateCsv').addEventListener('click', () => {
+    if (typeof Papa === 'undefined') {
+      toast('Library CSV gagal dimuat (cek koneksi internet), coba muat ulang halaman.', 'error');
+      return;
+    }
+    const csv = Papa.unparse(TEMPLATE_ROWS);
+    downloadTextFile('template-import-petani.csv', csv, 'text/csv');
+  });
+
+  document.getElementById('btnTemplateJson').addEventListener('click', () => {
+    downloadTextFile('template-import-petani.json', JSON.stringify(TEMPLATE_ROWS, null, 2), 'application/json');
+  });
+
+  // Accepts messy real-world header variants: "Kode Petani", "kode_petani",
+  // "KODE", etc. — normalizes by stripping spaces/underscores and lowercasing.
+  function normalizePetaniRow(raw) {
+    const norm = {};
+    for (const [key, val] of Object.entries(raw)) {
+      const k = key.toLowerCase().replace(/[\s_]/g, '');
+      norm[k] = typeof val === 'string' ? val.trim() : val;
+    }
+    const pick = (...keys) => {
+      for (const k of keys) if (norm[k] !== undefined && norm[k] !== '') return norm[k];
+      return '';
+    };
+    return {
+      kodePetani: String(pick('kodepetani', 'kode', 'code') || ''),
+      namaPetani: String(pick('namapetani', 'nama', 'name') || ''),
+      petaniConversion: String(pick('petaniconversion', 'conversion') || ''),
+      kodeFT: String(pick('kodeft', 'kode_ft', 'ft') || ''),
+    };
+  }
+
+  let importValidRows = [];
+
+  function renderImportPreview(importRows) {
+    const wrap = document.getElementById('petaniImportPreviewWrap');
+    const actions = document.getElementById('petaniImportActions');
+    if (importRows.length === 0) {
+      wrap.innerHTML = '';
+      actions.classList.add('hidden');
+      importValidRows = [];
+      return;
+    }
+    const existingKodes = new Set(rows.map((p) => p.kodePetani));
+    const checked = importRows.map((r) => {
+      const errors = [];
+      if (!r.kodePetani) errors.push('Kode Petani kosong');
+      if (!r.namaPetani) errors.push('Nama Petani kosong');
+      return { ...r, valid: errors.length === 0, errors, isUpdate: existingKodes.has(r.kodePetani) };
+    });
+    importValidRows = checked.filter((r) => r.valid);
+    const invalidCount = checked.length - importValidRows.length;
+
+    wrap.innerHTML = `
+      <p class="hint-text">${checked.length} baris terbaca — <strong>${importValidRows.length} valid</strong>${invalidCount > 0 ? `, ${invalidCount} bermasalah (lihat tabel)` : ''}.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Kode</th><th>Nama</th><th>Conversion</th><th>Kode FT</th><th>Status</th></tr></thead>
+          <tbody>
+            ${checked.slice(0, 200).map((r) => `
+              <tr>
+                <td>${esc(r.kodePetani)}</td>
+                <td>${esc(r.namaPetani)}</td>
+                <td>${esc(r.petaniConversion)}</td>
+                <td>${esc(r.kodeFT)}</td>
+                <td>${r.valid
+                  ? `<span class="badge synced">${r.isUpdate ? 'Valid (update)' : 'Valid (baru)'}</span>`
+                  : `<span class="badge pending">${esc(r.errors.join(', '))}</span>`}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+      ${checked.length > 200 ? `<p class="hint-text">Menampilkan 200 dari ${checked.length} baris.</p>` : ''}
+    `;
+    document.getElementById('petaniImportValidCount').textContent = importValidRows.length;
+    actions.classList.toggle('hidden', importValidRows.length === 0);
+  }
+
+  document.getElementById('petaniImportFile').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const isJson = file.name.toLowerCase().endsWith('.json');
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        let parsedRows;
+        if (isJson) {
+          const data = JSON.parse(reader.result);
+          if (!Array.isArray(data)) throw new Error('File JSON harus berupa array/list objek.');
+          parsedRows = data;
+        } else {
+          if (typeof Papa === 'undefined') {
+            toast('Library CSV gagal dimuat (cek koneksi internet), coba muat ulang halaman.', 'error');
+            return;
+          }
+          const result = Papa.parse(reader.result, { header: true, skipEmptyLines: true });
+          parsedRows = result.data;
+        }
+        const normalized = parsedRows.map(normalizePetaniRow);
+        renderImportPreview(normalized);
+      } catch (err) {
+        toast('Gagal membaca file: ' + err.message, 'error');
+        document.getElementById('petaniImportPreviewWrap').innerHTML = '';
+        document.getElementById('petaniImportActions').classList.add('hidden');
+      }
+    };
+    reader.onerror = () => toast('Gagal membaca file.', 'error');
+    reader.readAsText(file);
+  });
+
+  document.getElementById('btnCancelImport').addEventListener('click', () => {
+    document.getElementById('petaniImportFile').value = '';
+    document.getElementById('petaniImportPreviewWrap').innerHTML = '';
+    document.getElementById('petaniImportActions').classList.add('hidden');
+    importValidRows = [];
+  });
+
+  document.getElementById('btnConfirmImport').addEventListener('click', async () => {
+    if (importValidRows.length === 0) return;
+    const btn = document.getElementById('btnConfirmImport');
+    btn.disabled = true;
+    try {
+      const currentSettings = await getAppSettings();
+      const payload = importValidRows.map((r) => ({
+        kodePetani: r.kodePetani,
+        namaPetani: r.namaPetani,
+        source: currentSettings.source,
+        petaniConversion: r.petaniConversion,
+        kodeFT: r.kodeFT,
+      }));
+      await DB.bulkPut('petani', payload);
+      toast(`${payload.length} data petani berhasil diimpor.`, 'success');
+      renderPetaniPage(main);
+    } catch (err) {
+      toast('Gagal impor: ' + err.message, 'error');
+      btn.disabled = false;
+    }
   });
 }
 
