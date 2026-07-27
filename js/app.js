@@ -274,7 +274,7 @@ function bindLogin() {
       errEl.textContent = 'ID Pegawai atau password salah.';
       return;
     }
-    State.user = { kodenik: emp.kodenik, nama: emp.nama, posisi: emp.posisi, kodeFT: emp.kodeFT || '' };
+    State.user = { kodenik: emp.kodenik, nama: emp.nama, posisi: emp.posisi };
     sessionStorage.setItem('idsTrackerUser', JSON.stringify(State.user));
     State.page = 'dashboard';
     showApp();
@@ -511,11 +511,7 @@ async function renderDashboardPage(main) {
 // PAGE: Catat Lokasi (core GPS recording feature)
 // ---------------------------------------------------------------
 async function renderRecordPage(main) {
-  const allPetani = await DB.getAll('petani');
-  const lockedKodeFT = (State.user && State.user.kodeFT) ? State.user.kodeFT.trim() : '';
-  State.petaniCache = lockedKodeFT
-    ? allPetani.filter((p) => (p.kodeFT || '').trim().toLowerCase() === lockedKodeFT.toLowerCase())
-    : allPetani;
+  State.petaniCache = await DB.getAll('petani');
   State.typeCache = await DB.getAll('types');
   const records = (await DB.getAll('records')).sort((a, b) => b.id - a.id);
   const sourceOptions = [...new Set(State.petaniCache.map((p) => p.source).filter(Boolean))].sort();
@@ -550,8 +546,7 @@ async function renderRecordPage(main) {
         <div class="field">
           <label for="rPetaniSearch">Kode Petani</label>
           ${petaniComboHtml({ searchId: 'rPetaniSearch', hiddenId: 'rPetani', dropdownId: 'rPetaniDropdown', petaniList: State.petaniCache })}
-          ${lockedKodeFT ? `<div class="hint-text">🔒 Dikunci ke Kode FT <strong>${esc(lockedKodeFT)}</strong> — hanya petani dengan Kode FT ini yang muncul.</div>` : ''}
-          ${State.petaniCache.length === 0 ? `<div class="hint-text">${lockedKodeFT ? 'Tidak ada petani dengan Kode FT ini.' : 'Belum ada data petani. Tambahkan dulu di menu Master Petani.'}</div>` : '<div class="hint-text">Ketik sebagian kode atau nama, mis. "0881" untuk mencari "IDOLA.TSP.A0881".</div>'}
+          ${State.petaniCache.length === 0 ? '<div class="hint-text">Belum ada data petani. Tambahkan dulu di menu Master Petani.</div>' : '<div class="hint-text">Ketik sebagian kode atau nama, mis. "0881" untuk mencari "IDOLA.TSP.A0881".</div>'}
         </div>
 
         <div class="gps-box">
@@ -804,11 +799,7 @@ function centroidOf(points) {
 }
 
 async function renderAreaPage(main) {
-  const allPetaniArea = await DB.getAll('petani');
-  const lockedKodeFTArea = (State.user && State.user.kodeFT) ? State.user.kodeFT.trim() : '';
-  const petaniList = lockedKodeFTArea
-    ? allPetaniArea.filter((p) => (p.kodeFT || '').trim().toLowerCase() === lockedKodeFTArea.toLowerCase())
-    : allPetaniArea;
+  const petaniList = await DB.getAll('petani');
   const typeCacheArea = await DB.getAll('types');
   const areas = (await DB.getAll('areas')).sort((a, b) => b.id - a.id);
   const sourceOptions = [...new Set(petaniList.map((p) => p.source).filter(Boolean))].sort();
@@ -839,7 +830,6 @@ async function renderAreaPage(main) {
         <div class="field">
           <label for="aPetaniSearch">Kode Petani</label>
           ${petaniComboHtml({ searchId: 'aPetaniSearch', hiddenId: 'aPetani', dropdownId: 'aPetaniDropdown', petaniList })}
-          ${lockedKodeFTArea ? `<div class="hint-text">🔒 Dikunci ke Kode FT <strong>${esc(lockedKodeFTArea)}</strong> — hanya petani dengan Kode FT ini yang muncul.</div>` : ''}
           <div class="hint-text">Ketik sebagian kode atau nama, mis. "0881" untuk mencari "IDOLA.TSP.A0881".</div>
         </div>
 
@@ -2025,11 +2015,6 @@ async function renderEmployeePage(main) {
           <div class="field"><label>Posisi</label><input type="text" id="ePosisi" /></div>
           <div class="field"><label>Password Login</label><input type="text" id="ePassword" placeholder="untuk login form" required /></div>
         </div>
-        <div class="field">
-          <label>Kode FT <span class="hint-inline">(opsional — kunci akses petani)</span></label>
-          <input type="text" id="eKodeFT" placeholder="mis. IDS/A0001" />
-          <div class="hint-text">Kalau diisi, saat login pegawai ini hanya bisa memilih petani dengan Kode FT yang sama saat mencatat titik/area. Kosongkan untuk akses ke semua petani.</div>
-        </div>
         <div class="form-actions">
           <button type="submit" class="btn btn-primary">Simpan</button>
           <button type="button" class="btn btn-ghost hidden" id="eCancelEdit">Batal Edit</button>
@@ -2042,12 +2027,11 @@ async function renderEmployeePage(main) {
       <div class="table-wrap">
         ${rows.length === 0 ? '<div class="empty-state">Belum ada data employee.</div>' : `
         <table>
-          <thead><tr><th>Kode NIK</th><th>Nama</th><th>Posisi</th><th>Kode FT</th><th></th></tr></thead>
+          <thead><tr><th>Kode NIK</th><th>Nama</th><th>Posisi</th><th></th></tr></thead>
           <tbody>
             ${rows.map(e => `
               <tr>
                 <td>${esc(e.kodenik)}</td><td>${esc(e.nama)}</td><td>${esc(e.posisi)}</td>
-                <td>${e.kodeFT ? `<span class="badge">${esc(e.kodeFT)}</span>` : '<span class="hint-text">Semua petani</span>'}</td>
                 <td class="table-actions">
                   <button class="btn btn-ghost btn-sm" data-edit-emp="${esc(e.kodenik)}">Edit</button>
                   <button class="btn btn-danger btn-sm" data-del-emp="${esc(e.kodenik)}">Hapus</button>
@@ -2075,7 +2059,6 @@ async function renderEmployeePage(main) {
       nama: document.getElementById('eNama').value.trim(),
       posisi: document.getElementById('ePosisi').value.trim(),
       password: document.getElementById('ePassword').value,
-      kodeFT: document.getElementById('eKodeFT').value.trim(),
     });
     toast('Data employee tersimpan.', 'success');
     State.editingEmployee = null;
@@ -2094,7 +2077,6 @@ async function renderEmployeePage(main) {
       document.getElementById('eNama').value = emp.nama || '';
       document.getElementById('ePosisi').value = emp.posisi || '';
       document.getElementById('ePassword').value = emp.password || '';
-      document.getElementById('eKodeFT').value = emp.kodeFT || '';
       cancelBtn.classList.remove('hidden');
       window.scrollTo({ top: 0, behavior: 'smooth' });
     });
