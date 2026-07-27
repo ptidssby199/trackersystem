@@ -194,7 +194,7 @@ function parseFirebaseConfigText(text) {
 // App/cache version shown in the header, so it's easy to confirm whether a
 // device has actually picked up the latest deployed build (vs. a stale
 // cached copy served by the service worker).
-const APP_VERSION = 'v14';
+const APP_VERSION = 'v16';
 
 window.addEventListener('DOMContentLoaded', async () => {
   document.querySelectorAll('#appVersionLabel, #loginVersionLabel').forEach((el) => {
@@ -274,7 +274,7 @@ function bindLogin() {
       errEl.textContent = 'ID Pegawai atau password salah.';
       return;
     }
-    State.user = { kodenik: emp.kodenik, nama: emp.nama, posisi: emp.posisi };
+    State.user = { kodenik: emp.kodenik, nama: emp.nama, posisi: emp.posisi, kodeFT: emp.kodeFT || '' };
     sessionStorage.setItem('idsTrackerUser', JSON.stringify(State.user));
     State.page = 'dashboard';
     showApp();
@@ -511,9 +511,15 @@ async function renderDashboardPage(main) {
 // PAGE: Catat Lokasi (core GPS recording feature)
 // ---------------------------------------------------------------
 async function renderRecordPage(main) {
-  State.petaniCache = await DB.getAll('petani');
+  const allPetani = await DB.getAll('petani');
+  const lockedKodeFT = (State.user && State.user.kodeFT) ? State.user.kodeFT.trim() : '';
+  State.petaniCache = lockedKodeFT
+    ? allPetani.filter((p) => (p.kodeFT || '').trim().toLowerCase() === lockedKodeFT.toLowerCase())
+    : allPetani;
   State.typeCache = await DB.getAll('types');
   const records = (await DB.getAll('records')).sort((a, b) => b.id - a.id);
+  const sourceOptions = [...new Set(State.petaniCache.map((p) => p.source).filter(Boolean))].sort();
+  const cropYearOptions = [...new Set(records.map((r) => r.cropYear).filter((y) => y != null))].sort((a, b) => b - a);
 
   main.innerHTML = `
     <p class="page-eyebrow">Menu 01</p>
@@ -542,12 +548,10 @@ async function renderRecordPage(main) {
           </div>
         </div>
         <div class="field">
-          <label for="rPetani">Kode Petani</label>
-          <select id="rPetani" required>
-            <option value="">Pilih petani…</option>
-            ${State.petaniCache.map(p => `<option value="${esc(p.kodePetani)}">${esc(p.kodePetani)} — ${esc(p.namaPetani)}</option>`).join('')}
-          </select>
-          ${State.petaniCache.length === 0 ? '<div class="hint-text">Belum ada data petani. Tambahkan dulu di menu Master Petani.</div>' : ''}
+          <label for="rPetaniSearch">Kode Petani</label>
+          ${petaniComboHtml({ searchId: 'rPetaniSearch', hiddenId: 'rPetani', dropdownId: 'rPetaniDropdown', petaniList: State.petaniCache })}
+          ${lockedKodeFT ? `<div class="hint-text">🔒 Dikunci ke Kode FT <strong>${esc(lockedKodeFT)}</strong> — hanya petani dengan Kode FT ini yang muncul.</div>` : ''}
+          ${State.petaniCache.length === 0 ? `<div class="hint-text">${lockedKodeFT ? 'Tidak ada petani dengan Kode FT ini.' : 'Belum ada data petani. Tambahkan dulu di menu Master Petani.'}</div>` : '<div class="hint-text">Ketik sebagian kode atau nama, mis. "0881" untuk mencari "IDOLA.TSP.A0881".</div>'}
         </div>
 
         <div class="gps-box">
@@ -570,36 +574,91 @@ async function renderRecordPage(main) {
 
     <div class="panel">
       <h3>Riwayat Titik Terakhir</h3>
-      <div class="table-wrap">
-        ${records.length === 0 ? '<div class="empty-state">Belum ada titik lokasi tercatat.</div>' : `
-        <table>
-          <thead><tr><th>Tanggal</th><th>Kode Petani</th><th>Nama Petani</th><th>Type</th><th>Koordinat (Lat, Long, Alt)</th><th>Crop Year</th><th>Status</th><th></th></tr></thead>
-          <tbody>
-            ${records.slice(0, 25).map(r => `
-              <tr>
-                <td>${esc(r.tanggal)}</td>
-                <td>${esc(r.kodePetani)}</td>
-                <td>${esc(r.namaPetani)}</td>
-                <td>${typeBadgeHtml(State.typeCache, r.type)}</td>
-                <td style="font-family:var(--mono);font-size:0.78rem">${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}, ${r.altitude != null ? r.altitude.toFixed(1) : '-'}</td>
-                <td>${esc(r.cropYear ?? '-')}</td>
-                <td><span class="badge ${r.syncStatus === 'synced' ? 'synced' : 'pending'}">${r.syncStatus === 'synced' ? 'Tersinkron' : 'Belum sinkron'}</span></td>
-                <td class="table-actions"><button class="btn btn-danger btn-sm" data-del-record="${r.id}">Hapus</button></td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>`}
+      <div class="grid-2">
+        <div class="field">
+          <label for="rFilterSource">Filter Source</label>
+          <select id="rFilterSource">
+            <option value="">Semua Source</option>
+            ${sourceOptions.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field">
+          <label for="rFilterCropYear">Filter Crop Year</label>
+          <select id="rFilterCropYear">
+            <option value="">Semua Crop Year</option>
+            ${cropYearOptions.map(y => `<option value="${esc(y)}">${esc(y)}</option>`).join('')}
+          </select>
+        </div>
       </div>
+      <div class="table-wrap" id="recordHistoryWrap"></div>
     </div>
   `;
 
   initMiniMap();
+  wirePetaniCombo({
+    searchId: 'rPetaniSearch', hiddenId: 'rPetani', dropdownId: 'rPetaniDropdown',
+    getPetaniList: () => State.petaniCache,
+  });
+
+  function renderRecordHistory() {
+    const sourceVal = document.getElementById('rFilterSource').value;
+    const cropYearVal = document.getElementById('rFilterCropYear').value;
+    const petaniByKode = Object.fromEntries(State.petaniCache.map((p) => [p.kodePetani, p]));
+    const filtered = records.filter((r) => {
+      if (sourceVal) {
+        const p = petaniByKode[r.kodePetani];
+        if (!p || p.source !== sourceVal) return false;
+      }
+      if (cropYearVal && String(r.cropYear ?? '') !== cropYearVal) return false;
+      return true;
+    });
+
+    const wrap = document.getElementById('recordHistoryWrap');
+    if (filtered.length === 0) {
+      wrap.innerHTML = '<div class="empty-state">Tidak ada titik lokasi yang cocok.</div>';
+      return;
+    }
+    wrap.innerHTML = `
+      <table>
+        <thead><tr><th>Tanggal</th><th>Kode Petani</th><th>Nama Petani</th><th>Type</th><th>Koordinat (Lat, Long, Alt)</th><th>Crop Year</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          ${filtered.slice(0, 25).map(r => `
+            <tr>
+              <td>${esc(r.tanggal)}</td>
+              <td>${esc(r.kodePetani)}</td>
+              <td>${esc(r.namaPetani)}</td>
+              <td>${typeBadgeHtml(State.typeCache, r.type)}</td>
+              <td style="font-family:var(--mono);font-size:0.78rem">${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}, ${r.altitude != null ? r.altitude.toFixed(1) : '-'}</td>
+              <td>${esc(r.cropYear ?? '-')}</td>
+              <td><span class="badge ${r.syncStatus === 'synced' ? 'synced' : 'pending'}">${r.syncStatus === 'synced' ? 'Tersinkron' : 'Belum sinkron'}</span></td>
+              <td class="table-actions"><button class="btn btn-danger btn-sm" data-del-record="${r.id}">Hapus</button></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>`;
+    wrap.querySelectorAll('[data-del-record]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Hapus titik lokasi ini?')) return;
+        await DB.remove('records', Number(btn.dataset.delRecord));
+        toast('Titik lokasi dihapus.');
+        renderRecordPage(main);
+      });
+    });
+  }
+
+  document.getElementById('rFilterSource').addEventListener('change', renderRecordHistory);
+  document.getElementById('rFilterCropYear').addEventListener('change', renderRecordHistory);
+  renderRecordHistory();
 
   document.getElementById('btnGetGps').addEventListener('click', captureGps);
 
   document.getElementById('recordForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     if (!State.gps) { toast('Ambil koordinat GPS terlebih dahulu.', 'error'); return; }
+    if (!document.getElementById('rPetani').value) {
+      toast('Pilih petani dari daftar terlebih dahulu.', 'error');
+      return;
+    }
     const kodePetani = document.getElementById('rPetani').value;
     const petani = State.petaniCache.find(p => p.kodePetani === kodePetani);
     const settings = await getAppSettings();
@@ -627,15 +686,6 @@ async function renderRecordPage(main) {
     await DB.put('records', record);
     toast('Titik lokasi tersimpan.', 'success');
     renderRecordPage(main);
-  });
-
-  main.querySelectorAll('[data-del-record]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      if (!confirm('Hapus titik lokasi ini?')) return;
-      await DB.remove('records', Number(btn.dataset.delRecord));
-      toast('Titik lokasi dihapus.');
-      renderRecordPage(main);
-    });
   });
 }
 
@@ -754,9 +804,15 @@ function centroidOf(points) {
 }
 
 async function renderAreaPage(main) {
-  const petaniList = await DB.getAll('petani');
+  const allPetaniArea = await DB.getAll('petani');
+  const lockedKodeFTArea = (State.user && State.user.kodeFT) ? State.user.kodeFT.trim() : '';
+  const petaniList = lockedKodeFTArea
+    ? allPetaniArea.filter((p) => (p.kodeFT || '').trim().toLowerCase() === lockedKodeFTArea.toLowerCase())
+    : allPetaniArea;
   const typeCacheArea = await DB.getAll('types');
   const areas = (await DB.getAll('areas')).sort((a, b) => b.id - a.id);
+  const sourceOptions = [...new Set(petaniList.map((p) => p.source).filter(Boolean))].sort();
+  const cropYearOptions = [...new Set(areas.map((a) => a.cropYear).filter((y) => y != null))].sort((a, b) => b - a);
   State.areaPoints = [];
 
   main.innerHTML = `
@@ -781,11 +837,10 @@ async function renderAreaPage(main) {
           </div>
         </div>
         <div class="field">
-          <label for="aPetani">Kode Petani</label>
-          <select id="aPetani" required>
-            <option value="">Pilih petani...</option>
-            ${petaniList.map(p => `<option value="${esc(p.kodePetani)}">${esc(p.kodePetani)} — ${esc(p.namaPetani)}</option>`).join('')}
-          </select>
+          <label for="aPetaniSearch">Kode Petani</label>
+          ${petaniComboHtml({ searchId: 'aPetaniSearch', hiddenId: 'aPetani', dropdownId: 'aPetaniDropdown', petaniList })}
+          ${lockedKodeFTArea ? `<div class="hint-text">🔒 Dikunci ke Kode FT <strong>${esc(lockedKodeFTArea)}</strong> — hanya petani dengan Kode FT ini yang muncul.</div>` : ''}
+          <div class="hint-text">Ketik sebagian kode atau nama, mis. "0881" untuk mencari "IDOLA.TSP.A0881".</div>
         </div>
 
         <div class="gps-box">
@@ -823,32 +878,84 @@ async function renderAreaPage(main) {
     </div>
 
     <div class="panel">
-      <h3>Riwayat Area (${areas.length})</h3>
-      <div class="table-wrap">
-        ${areas.length === 0 ? '<div class="empty-state">Belum ada area tercatat.</div>' : `
-        <table>
-          <thead><tr><th>Tanggal</th><th>Kode Petani</th><th>Nama Petani</th><th>Type</th><th>Titik</th><th>Luas (Ha)</th><th>Status</th><th></th></tr></thead>
-          <tbody>
-            ${areas.map(a => `
-              <tr>
-                <td>${esc(a.tanggal)}</td>
-                <td>${esc(a.kodePetani)}</td>
-                <td>${esc(a.namaPetani)}</td>
-                <td>${typeBadgeHtml(typeCacheArea, a.type)}</td>
-                <td>${a.points.length}</td>
-                <td style="font-family:var(--mono)">${a.luasHa.toFixed(2)}</td>
-                <td><span class="badge ${a.syncStatus === 'synced' ? 'synced' : 'pending'}">${a.syncStatus === 'synced' ? 'Tersinkron' : 'Belum sinkron'}</span></td>
-                <td class="table-actions"><button class="btn btn-danger btn-sm" data-del-area="${a.id}">Hapus</button></td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>`}
+      <h3>Riwayat Area (<span id="areaHistoryCount">${areas.length}</span>)</h3>
+      <div class="grid-2">
+        <div class="field">
+          <label for="aFilterSource">Filter Source</label>
+          <select id="aFilterSource">
+            <option value="">Semua Source</option>
+            ${sourceOptions.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field">
+          <label for="aFilterCropYear">Filter Crop Year</label>
+          <select id="aFilterCropYear">
+            <option value="">Semua Crop Year</option>
+            ${cropYearOptions.map(y => `<option value="${esc(y)}">${esc(y)}</option>`).join('')}
+          </select>
+        </div>
       </div>
+      <div class="table-wrap" id="areaHistoryWrap"></div>
     </div>
   `;
 
   initAreaMap();
   renderAreaPointsTable();
+  wirePetaniCombo({
+    searchId: 'aPetaniSearch', hiddenId: 'aPetani', dropdownId: 'aPetaniDropdown',
+    getPetaniList: () => petaniList,
+  });
+
+  function renderAreaHistory() {
+    const sourceVal = document.getElementById('aFilterSource').value;
+    const cropYearVal = document.getElementById('aFilterCropYear').value;
+    const petaniByKode = Object.fromEntries(petaniList.map((p) => [p.kodePetani, p]));
+    const filtered = areas.filter((a) => {
+      if (sourceVal) {
+        const p = petaniByKode[a.kodePetani];
+        if (!p || p.source !== sourceVal) return false;
+      }
+      if (cropYearVal && String(a.cropYear ?? '') !== cropYearVal) return false;
+      return true;
+    });
+
+    document.getElementById('areaHistoryCount').textContent = filtered.length;
+    const wrap = document.getElementById('areaHistoryWrap');
+    if (filtered.length === 0) {
+      wrap.innerHTML = '<div class="empty-state">Tidak ada area yang cocok.</div>';
+      return;
+    }
+    wrap.innerHTML = `
+      <table>
+        <thead><tr><th>Tanggal</th><th>Kode Petani</th><th>Nama Petani</th><th>Type</th><th>Titik</th><th>Luas (Ha)</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          ${filtered.map(a => `
+            <tr>
+              <td>${esc(a.tanggal)}</td>
+              <td>${esc(a.kodePetani)}</td>
+              <td>${esc(a.namaPetani)}</td>
+              <td>${typeBadgeHtml(typeCacheArea, a.type)}</td>
+              <td>${a.points.length}</td>
+              <td style="font-family:var(--mono)">${a.luasHa.toFixed(2)}</td>
+              <td><span class="badge ${a.syncStatus === 'synced' ? 'synced' : 'pending'}">${a.syncStatus === 'synced' ? 'Tersinkron' : 'Belum sinkron'}</span></td>
+              <td class="table-actions"><button class="btn btn-danger btn-sm" data-del-area="${a.id}">Hapus</button></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>`;
+    wrap.querySelectorAll('[data-del-area]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Hapus area ini?')) return;
+        await DB.remove('areas', Number(btn.dataset.delArea));
+        toast('Area dihapus.');
+        renderAreaPage(main);
+      });
+    });
+  }
+
+  document.getElementById('aFilterSource').addEventListener('change', renderAreaHistory);
+  document.getElementById('aFilterCropYear').addEventListener('change', renderAreaHistory);
+  renderAreaHistory();
 
   document.getElementById('btnAddAreaPoint').addEventListener('click', captureAreaPoint);
   document.getElementById('btnUndoAreaPoint').addEventListener('click', () => {
@@ -867,6 +974,10 @@ async function renderAreaPage(main) {
     e.preventDefault();
     if (State.areaPoints.length < MIN_AREA_POINTS) {
       toast(`Minimal ${MIN_AREA_POINTS} titik sebelum area bisa disimpan.`, 'error');
+      return;
+    }
+    if (!document.getElementById('aPetani').value) {
+      toast('Pilih petani dari daftar terlebih dahulu.', 'error');
       return;
     }
     const kodePetani = document.getElementById('aPetani').value;
@@ -899,15 +1010,6 @@ async function renderAreaPage(main) {
     await DB.put('areas', areaRecord);
     toast(`Area tersimpan (${State.areaPoints.length} titik, ${luasHa.toFixed(2)} Ha).`, 'success');
     renderAreaPage(main);
-  });
-
-  main.querySelectorAll('[data-del-area]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      if (!confirm('Hapus area ini?')) return;
-      await DB.remove('areas', Number(btn.dataset.delArea));
-      toast('Area dihapus.');
-      renderAreaPage(main);
-    });
   });
 }
 
@@ -1537,12 +1639,20 @@ async function renderPetaniPage(main) {
     URL.revokeObjectURL(url);
   }
 
+  function simpleCsvFromRows(objRows) {
+    if (objRows.length === 0) return '';
+    const headers = Object.keys(objRows[0]);
+    const escapeCsvField = (val) => {
+      const s = String(val ?? '');
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = [headers.join(',')];
+    objRows.forEach((r) => lines.push(headers.map((h) => escapeCsvField(r[h])).join(',')));
+    return lines.join('\r\n');
+  }
+
   document.getElementById('btnTemplateCsv').addEventListener('click', () => {
-    if (typeof Papa === 'undefined') {
-      toast('Library CSV gagal dimuat (cek koneksi internet), coba muat ulang halaman.', 'error');
-      return;
-    }
-    const csv = Papa.unparse(TEMPLATE_ROWS);
+    const csv = simpleCsvFromRows(TEMPLATE_ROWS);
     downloadTextFile('template-import-petani.csv', csv, 'text/csv');
   });
 
@@ -1689,6 +1799,77 @@ function typeMeta(t) {
     icon: (t && t.icon) || '📍',
     color: (t && t.color) || '#c96a2e',
   };
+}
+
+// ---------------------------------------------------------------
+// Reusable searchable "Kode Petani" combo box.
+// Renders a text input (search by kode or nama, substring match anywhere in
+// the string — e.g. typing "0881" matches "IDOLA.TSP.A0881") plus a hidden
+// input holding the actual selected kodePetani (read via its .value like a
+// normal <select>, so existing form-submit code needs no changes).
+// ---------------------------------------------------------------
+function petaniComboHtml({ searchId, hiddenId, dropdownId, selectedKode = '', petaniList }) {
+  const selected = petaniList.find((p) => p.kodePetani === selectedKode);
+  const initialText = selected ? `${selected.kodePetani} — ${selected.namaPetani}` : '';
+  return `
+    <div class="combo-field">
+      <input type="text" id="${searchId}" class="combo-search" autocomplete="off"
+        placeholder="Ketik kode atau nama petani…" value="${esc(initialText)}" />
+      <input type="hidden" id="${hiddenId}" value="${esc(selectedKode)}" />
+      <div class="combo-dropdown hidden" id="${dropdownId}"></div>
+    </div>
+  `;
+}
+
+function wirePetaniCombo({ searchId, hiddenId, dropdownId, getPetaniList, onSelect }) {
+  const searchEl = document.getElementById(searchId);
+  const hiddenEl = document.getElementById(hiddenId);
+  const dropdownEl = document.getElementById(dropdownId);
+  if (!searchEl || !hiddenEl || !dropdownEl) return;
+
+  function renderOptions(query) {
+    const q = query.trim().toLowerCase();
+    const list = getPetaniList();
+    const matches = (q === ''
+      ? list
+      : list.filter((p) =>
+          p.kodePetani.toLowerCase().includes(q) || (p.namaPetani || '').toLowerCase().includes(q)
+        )
+    ).slice(0, 50);
+
+    if (matches.length === 0) {
+      dropdownEl.innerHTML = '<div class="combo-empty">Tidak ada petani yang cocok.</div>';
+    } else {
+      dropdownEl.innerHTML = matches.map((p) => `
+        <div class="combo-option" data-kode="${esc(p.kodePetani)}">
+          <strong>${esc(p.kodePetani)}</strong> — ${esc(p.namaPetani)}
+        </div>
+      `).join('');
+    }
+    dropdownEl.classList.remove('hidden');
+  }
+
+  searchEl.addEventListener('focus', () => renderOptions(searchEl.value));
+  searchEl.addEventListener('input', () => {
+    hiddenEl.value = ''; // require an explicit re-selection after manual edits
+    renderOptions(searchEl.value);
+  });
+  searchEl.addEventListener('blur', () => {
+    // Delay so a click on a dropdown option registers before we hide it.
+    setTimeout(() => dropdownEl.classList.add('hidden'), 150);
+  });
+
+  dropdownEl.addEventListener('mousedown', (e) => {
+    const opt = e.target.closest('.combo-option');
+    if (!opt) return;
+    e.preventDefault();
+    const kode = opt.dataset.kode;
+    const p = getPetaniList().find((x) => x.kodePetani === kode);
+    hiddenEl.value = kode;
+    searchEl.value = p ? `${p.kodePetani} — ${p.namaPetani}` : kode;
+    dropdownEl.classList.add('hidden');
+    if (onSelect) onSelect(kode);
+  });
 }
 
 function typeBadgeHtml(typeCache, typeName) {
@@ -1844,6 +2025,11 @@ async function renderEmployeePage(main) {
           <div class="field"><label>Posisi</label><input type="text" id="ePosisi" /></div>
           <div class="field"><label>Password Login</label><input type="text" id="ePassword" placeholder="untuk login form" required /></div>
         </div>
+        <div class="field">
+          <label>Kode FT <span class="hint-inline">(opsional — kunci akses petani)</span></label>
+          <input type="text" id="eKodeFT" placeholder="mis. IDS/A0001" />
+          <div class="hint-text">Kalau diisi, saat login pegawai ini hanya bisa memilih petani dengan Kode FT yang sama saat mencatat titik/area. Kosongkan untuk akses ke semua petani.</div>
+        </div>
         <div class="form-actions">
           <button type="submit" class="btn btn-primary">Simpan</button>
           <button type="button" class="btn btn-ghost hidden" id="eCancelEdit">Batal Edit</button>
@@ -1856,11 +2042,12 @@ async function renderEmployeePage(main) {
       <div class="table-wrap">
         ${rows.length === 0 ? '<div class="empty-state">Belum ada data employee.</div>' : `
         <table>
-          <thead><tr><th>Kode NIK</th><th>Nama</th><th>Posisi</th><th></th></tr></thead>
+          <thead><tr><th>Kode NIK</th><th>Nama</th><th>Posisi</th><th>Kode FT</th><th></th></tr></thead>
           <tbody>
             ${rows.map(e => `
               <tr>
                 <td>${esc(e.kodenik)}</td><td>${esc(e.nama)}</td><td>${esc(e.posisi)}</td>
+                <td>${e.kodeFT ? `<span class="badge">${esc(e.kodeFT)}</span>` : '<span class="hint-text">Semua petani</span>'}</td>
                 <td class="table-actions">
                   <button class="btn btn-ghost btn-sm" data-edit-emp="${esc(e.kodenik)}">Edit</button>
                   <button class="btn btn-danger btn-sm" data-del-emp="${esc(e.kodenik)}">Hapus</button>
@@ -1888,6 +2075,7 @@ async function renderEmployeePage(main) {
       nama: document.getElementById('eNama').value.trim(),
       posisi: document.getElementById('ePosisi').value.trim(),
       password: document.getElementById('ePassword').value,
+      kodeFT: document.getElementById('eKodeFT').value.trim(),
     });
     toast('Data employee tersimpan.', 'success');
     State.editingEmployee = null;
@@ -1906,6 +2094,7 @@ async function renderEmployeePage(main) {
       document.getElementById('eNama').value = emp.nama || '';
       document.getElementById('ePosisi').value = emp.posisi || '';
       document.getElementById('ePassword').value = emp.password || '';
+      document.getElementById('eKodeFT').value = emp.kodeFT || '';
       cancelBtn.classList.remove('hidden');
       window.scrollTo({ top: 0, behavior: 'smooth' });
     });
