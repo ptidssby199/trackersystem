@@ -194,7 +194,7 @@ function parseFirebaseConfigText(text) {
 // App/cache version shown in the header, so it's easy to confirm whether a
 // device has actually picked up the latest deployed build (vs. a stale
 // cached copy served by the service worker).
-const APP_VERSION = 'v16';
+const APP_VERSION = 'v17';
 
 window.addEventListener('DOMContentLoaded', async () => {
   document.querySelectorAll('#appVersionLabel, #loginVersionLabel').forEach((el) => {
