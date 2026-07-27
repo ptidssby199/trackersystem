@@ -121,6 +121,13 @@ button {
   margin-bottom: 6px;
 }
 
+.hint-inline {
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--way-600);
+  font-weight: 500;
+}
+
 .field input,
 .field select {
   width: 100%;
